@@ -16,15 +16,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Точные наименования брендов для проверки по границам слов
 TARGET_BRANDS = [
-    # Спортивные бренды
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
-    # Премиум / Casual / Аксессуары
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis",
-    # Масс-маркет
     "zara", "mango", "h&m", "h m", "hm",
-    # Мультибренды и аутлеты
     "zappos", "jomashop", "6pm"
 ]
 
@@ -49,44 +46,38 @@ CASHBACK_MAP = {
     "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
+    "H m": "TopCashback / Rakuten / iGraal (до 4-6%)",
+    "Hm": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)"
 }
 
 RSS_SOURCES = [
-    # США
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
-    
-    # Великобритания
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
-    
-    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
-    
-    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
-    
-    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
-    
-    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
-    
-    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
-def extract_brand(title: str) -> str:
+def find_matched_brand(title: str) -> str:
+    """Ищет бренд в заголовке строго как отдельное слово."""
     title_lower = title.lower()
     for brand in TARGET_BRANDS:
-        if brand in title_lower:
+        # Экранируем спецсимволы вроде & или '
+        pattern = r'\b' + re.escape(brand) + r'\b'
+        if re.search(pattern, title_lower):
+            if brand in ["h&m", "h m", "hm"]:
+                return "H&M"
             return brand.capitalize()
-    return "Global Brand"
+    return None
 
 async def scan_and_post(bot: Bot):
     for source in RSS_SOURCES:
@@ -100,11 +91,11 @@ async def scan_and_post(bot: Bot):
                 link = entry.link
                 deal_id = getattr(entry, 'id', link)
                 
-                title_lower = title.lower()
-                if not any(brand in title_lower for brand in TARGET_BRANDS):
+                # Точная проверка наличия бренда как отдельного слова
+                brand = find_matched_brand(title)
+                if not brand:
                     continue
 
-                brand = extract_brand(title)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -118,7 +109,7 @@ async def scan_and_post(bot: Bot):
                         image_url = img_match.group(1)
 
                 post_text = (
-                    f"🚨 **DROP SIGNAL | #{brand.upper()}**\n"
+                    f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
                     f"{flag}\n\n"
                     f"📦 **{title}**\n\n"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
@@ -148,7 +139,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Multi-Drop Signal] {flag} {brand}: {title[:40]}...")
+                    print(f"🔥 [Strict Match] {flag} {brand}: {title[:40]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -172,7 +163,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар (США, ЕС, Великобритания) обновлен!")
+    print("🚀 Глобальный радар с точным отбором брендов запущен!")
     
     while True:
         try:
