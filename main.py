@@ -21,15 +21,25 @@ TARGET_BRANDS = [
     "new balance", "coach", "jordan", "under armour", "zappos", "jomashop", "6pm"
 ]
 
-# Список всех RSS-источников (США + Европа)
+# Справочник лучших кэшбэк-платформ под бренды и магазины
+CASHBACK_MAP = {
+    "Nike": "TopCashback US (до 8-10%) | Rakuten (до 5%)",
+    "Adidas": "TopCashback US (до 6-8%) | Beruby (до 5%)",
+    "Puma": "TopCashback US (до 10%) | Rakuten (до 6%)",
+    "Calvin klein": "TopCashback US (до 7%) | Rakuten (до 4%)",
+    "Levi's": "TopCashback US (до 8%) | iGraal (до 5%)",
+    "Levis": "TopCashback US (до 8%) | iGraal (den 5%)",
+    "New balance": "TopCashback US (до 5%) | Rakuten (до 4%)",
+    "Coach": "TopCashback US (до 6%) | Rakuten (до 4%)",
+    "Jomashop": "TopCashback US (до 4%) | Rakuten (до 3%)",
+    "Zappos": "TopCashback US (до 5%) | Rakuten (до 3%)",
+    "6pm": "TopCashback US (до 4%) | Rakuten (до 2.5%)"
+}
+
 RSS_FEEDS = [
-    # Slickdeals Popular Deals
     "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+adidas+puma+calvin+levis+coach+jomashop+balance&rss=1",
-    # DealNews (США)
     "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1",
-    # HotUKDeals (Великобритания)
     "https://www.hotukdeals.com/rss/tag/fashion",
-    # Mydealz (Германия)
     "https://www.mydealz.de/rss/gruppe/fashion"
 ]
 
@@ -50,14 +60,13 @@ async def scan_and_post(bot: Bot):
                 link = entry.link
                 deal_id = getattr(entry, 'id', link)
                 
-                # Фильтруем только интересующие нас бренды
                 title_lower = title.lower()
                 if not any(brand in title_lower for brand in TARGET_BRANDS):
                     continue
 
                 brand = extract_brand(title)
+                cashback_info = CASHBACK_MAP.get(brand, "TopCashback US / Rakuten")
 
-                # Проверяем уникальность по базе Supabase
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
                 if res.data:
                     continue
@@ -71,7 +80,8 @@ async def scan_and_post(bot: Bot):
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper()}**\n\n"
                     f"📦 **{title}**\n\n"
-                    f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n\n"
+                    f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
+                    f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
                     f"🔗 [КУПИТЬ В 1 КЛИК]({link})"
                 )
 
@@ -97,7 +107,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Multi-Radar Drop] {brand}: {title[:40]}...")
+                    print(f"🔥 [Drop Signal with Cashback] {brand}: {title[:40]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -106,7 +116,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка парсинга ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="US/EU Multi-Drop Radar is live!")
+    return web.Response(text="US/EU Cashback Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -121,8 +131,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Мульти-радар США + Европа запущен на Render!")
-    print("🔎 Сканирование всех источников каждые 3 минуты...")
+    print("🚀 Радар с кэшбэк-подсказками запущен!")
     
     while True:
         try:
