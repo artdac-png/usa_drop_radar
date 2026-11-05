@@ -17,33 +17,67 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 TARGET_BRANDS = [
-    "nike", "adidas", "puma", "calvin klein", "levi's", "levis", 
-    "new balance", "coach", "jordan", "under armour", "zappos", "jomashop", "6pm"
+    # Спортивные бренды
+    "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
+    # Премиум / Casual / Аксессуары
+    "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
+    "michael kors", "kors", "coach", "levi's", "levis",
+    # Масс-маркет
+    "zara", "mango", "h&m", "h m", "hm",
+    # Мультибренды и аутлеты
+    "zappos", "jomashop", "6pm"
 ]
 
 CASHBACK_MAP = {
+    "Jordan": "TopCashback / Rakuten / Beruby (до 8-10%)",
     "Nike": "TopCashback / Beruby / Rakuten (до 8-10%)",
     "Adidas": "TopCashback / Beruby (до 6-8%)",
     "Puma": "TopCashback / iGraal (до 10%)",
+    "New balance": "TopCashback / Rakuten (до 5%)",
+    "Converse": "TopCashback / Rakuten (до 6-8%)",
+    "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Tommy hilfiger": "TopCashback / Rakuten (до 7%)",
+    "Tommy": "TopCashback / Rakuten (до 7%)",
     "Calvin klein": "TopCashback / Rakuten (до 7%)",
+    "Calvin": "TopCashback / Rakuten (до 7%)",
+    "Guess": "TopCashback / iGraal (до 6%)",
+    "Michael kors": "TopCashback / Rakuten (до 6%)",
+    "Kors": "TopCashback / Rakuten (до 6%)",
+    "Coach": "TopCashback / Rakuten (до 6%)",
     "Levi's": "TopCashback / iGraal (до 8%)",
     "Levis": "TopCashback / iGraal (до 8%)",
-    "New balance": "TopCashback / Rakuten (до 5%)",
-    "Coach": "TopCashback / Rakuten (до 6%)",
+    "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
+    "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
+    "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)"
 }
 
-# Источники скидок с разбивкой по складам Meest
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+adidas+puma+calvin+levis+coach+jomashop+balance&rss=1"},
+    # США
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
+    
+    # Великобритания
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
+    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
+    
+    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
+    {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
+    
+    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
+    {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
+    
+    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
+    
+    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
+    
+    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
@@ -71,7 +105,7 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 brand = extract_brand(title)
-                cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal")
+                cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
                 if res.data:
@@ -114,7 +148,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Multi-Country Drop] {flag} {brand}: {title[:40]}...")
+                    print(f"🔥 [Multi-Drop Signal] {flag} {brand}: {title[:40]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -123,7 +157,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Drop Radar is live!")
+    return web.Response(text="Global Multi-Brand Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -138,7 +172,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар (США, ЕС, Великобритания) запущен!")
+    print("🚀 Глобальный радар (США, ЕС, Великобритания) обновлен!")
     
     while True:
         try:
