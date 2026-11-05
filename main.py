@@ -75,22 +75,30 @@ def find_matched_brand(title: str) -> str:
     return None
 
 def extract_price(title: str, summary: str) -> str:
-    """Ищет цену в заголовке или в описании поста."""
-    # Регулярка для поиска валют: $50, €45.99, 45,99€, £30
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
-    
-    # 1. Сначала ищем в заголовке
     match_title = re.findall(price_pattern, title)
     if match_title:
         return match_title[0]
         
-    # 2. Если в заголовке нет, ищем в описании
     if summary:
         match_summary = re.findall(price_pattern, summary)
         if match_summary:
             return match_summary[0]
             
     return "См. на сайте"
+
+def extract_promo_code(title: str, summary: str) -> str:
+    """Ищет промокод по ключевым словам на разных языках (code, coupon, gutschein, código, промокод)."""
+    text = f"{title} {summary}"
+    # Ищем конструкции вида: code PROMO20, coupon: SAVE15, gutschein: NIKE20, código EXTRA10
+    pattern = r'(?:code|coupon|gutschein|código|промокод|code:)\s*[:\-]?\s*([A-Za-z0-9_\-]+)'
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        code = match.group(1).strip()
+        # Исключаем ложные короткие слова
+        if len(code) >= 3 and not code.lower() in ["the", "for", "and", "mit", "con"]:
+            return code.upper()
+    return None
 
 async def scan_and_post(bot: Bot):
     for source in RSS_SOURCES:
@@ -110,6 +118,7 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 price = extract_price(title, summary)
+                promo_code = extract_promo_code(title, summary)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -122,11 +131,15 @@ async def scan_and_post(bot: Bot):
                     if img_match:
                         image_url = img_match.group(1)
 
+                # Формируем блок промокода, если он найден
+                promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
+
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
                     f"{flag}\n\n"
                     f"📦 **{title}**\n"
-                    f"🏷 **Цена:** `{price}`\n\n"
+                    f"🏷 **Цена:** `{price}`\n"
+                    f"{promo_block}\n"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
                     f"🔗 [КУПИТЬ В 1 КЛИК]({link})"
@@ -154,7 +167,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Price Match] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Promo Radar] {flag} {brand} ({price}) Code: {promo_code}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -163,7 +176,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar with Prices is live!")
+    return web.Response(text="Global Multi-Brand Radar with Promo Codes is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -178,7 +191,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с автоизвлечением цен запущен!")
+    print("🚀 Глобальный радар с автопоиском промокодов запущен!")
     
     while True:
         try:
