@@ -16,7 +16,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Точные наименования брендов для проверки по границам слов
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -46,8 +45,6 @@ CASHBACK_MAP = {
     "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "H m": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "Hm": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)"
@@ -68,16 +65,32 @@ RSS_SOURCES = [
 ]
 
 def find_matched_brand(title: str) -> str:
-    """Ищет бренд в заголовке строго как отдельное слово."""
     title_lower = title.lower()
     for brand in TARGET_BRANDS:
-        # Экранируем спецсимволы вроде & или '
         pattern = r'\b' + re.escape(brand) + r'\b'
         if re.search(pattern, title_lower):
             if brand in ["h&m", "h m", "hm"]:
                 return "H&M"
             return brand.capitalize()
     return None
+
+def extract_price(title: str, summary: str) -> str:
+    """Ищет цену в заголовке или в описании поста."""
+    # Регулярка для поиска валют: $50, €45.99, 45,99€, £30
+    price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
+    
+    # 1. Сначала ищем в заголовке
+    match_title = re.findall(price_pattern, title)
+    if match_title:
+        return match_title[0]
+        
+    # 2. Если в заголовке нет, ищем в описании
+    if summary:
+        match_summary = re.findall(price_pattern, summary)
+        if match_summary:
+            return match_summary[0]
+            
+    return "См. на сайте"
 
 async def scan_and_post(bot: Bot):
     for source in RSS_SOURCES:
@@ -90,12 +103,13 @@ async def scan_and_post(bot: Bot):
                 title = entry.title
                 link = entry.link
                 deal_id = getattr(entry, 'id', link)
+                summary = getattr(entry, 'summary', '')
                 
-                # Точная проверка наличия бренда как отдельного слова
                 brand = find_matched_brand(title)
                 if not brand:
                     continue
 
+                price = extract_price(title, summary)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -103,15 +117,16 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 image_url = None
-                if hasattr(entry, 'summary'):
-                    img_match = re.search(r'src="(https?://[^"]+\.(?:jpg|png|jpeg))"', entry.summary)
+                if summary:
+                    img_match = re.search(r'src="(https?://[^"]+\.(?:jpg|png|jpeg))"', summary)
                     if img_match:
                         image_url = img_match.group(1)
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
                     f"{flag}\n\n"
-                    f"📦 **{title}**\n\n"
+                    f"📦 **{title}**\n"
+                    f"🏷 **Цена:** `{price}`\n\n"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
                     f"🔗 [КУПИТЬ В 1 КЛИК]({link})"
@@ -139,7 +154,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Strict Match] {flag} {brand}: {title[:40]}...")
+                    print(f"🔥 [Price Match] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -148,7 +163,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar is live!")
+    return web.Response(text="Global Multi-Brand Radar with Prices is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -163,7 +178,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с точным отбором брендов запущен!")
+    print("🚀 Глобальный радар с автоизвлечением цен запущен!")
     
     while True:
         try:
