@@ -88,17 +88,35 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
-    """Ищет промокод по ключевым словам на разных языках (code, coupon, gutschein, código, промокод)."""
     text = f"{title} {summary}"
-    # Ищем конструкции вида: code PROMO20, coupon: SAVE15, gutschein: NIKE20, código EXTRA10
     pattern = r'(?:code|coupon|gutschein|código|промокод|code:)\s*[:\-]?\s*([A-Za-z0-9_\-]+)'
     match = re.search(pattern, text, re.IGNORECASE)
     if match:
         code = match.group(1).strip()
-        # Исключаем ложные короткие слова
         if len(code) >= 3 and not code.lower() in ["the", "for", "and", "mit", "con"]:
             return code.upper()
     return None
+
+def extract_hd_image(summary: str) -> str:
+    """Извлекает прямую ссылку на фото и преобразует её в полноразмерное HD качество."""
+    if not summary:
+        return None
+        
+    # Ищем все ссылки на изображения
+    img_matches = re.findall(r'(?:src|data-src)="([^"]+\.(?:jpg|png|jpeg)[^"]*)"', summary, re.IGNORECASE)
+    if not img_matches:
+        return None
+
+    url = img_matches[0]
+
+    # Убираем параметры сжатия для серверов Pepper/Mydealz/Slickdeals
+    url = re.sub(r'threads/raw/default/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
+    url = re.sub(r'threads/thread_full_custom/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
+    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
+    url = re.sub(r'_thumb\.', '.', url)
+    url = re.sub(r'_small\.', '.', url)
+
+    return url
 
 async def scan_and_post(bot: Bot):
     for source in RSS_SOURCES:
@@ -125,13 +143,7 @@ async def scan_and_post(bot: Bot):
                 if res.data:
                     continue
 
-                image_url = None
-                if summary:
-                    img_match = re.search(r'src="(https?://[^"]+\.(?:jpg|png|jpeg))"', summary)
-                    if img_match:
-                        image_url = img_match.group(1)
-
-                # Формируем блок промокода, если он найден
+                image_url = extract_hd_image(summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
                 post_text = (
@@ -139,7 +151,7 @@ async def scan_and_post(bot: Bot):
                     f"{flag}\n\n"
                     f"📦 **{title}**\n"
                     f"🏷 **Цена:** `{price}`\n"
-                    f"{promo_block}\n"
+                    f"{promo_block}"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
                     f"🔗 [КУПИТЬ В 1 КЛИК]({link})"
@@ -167,7 +179,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Promo Radar] {flag} {brand} ({price}) Code: {promo_code}...")
+                    print(f"🔥 [HD Image Signal] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -176,7 +188,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar with Promo Codes is live!")
+    return web.Response(text="Global Multi-Brand Radar with HD Images is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -191,7 +203,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с автопоиском промокодов запущен!")
+    print("🚀 Глобальный радар с парсингом HD картинок запущен!")
     
     while True:
         try:
