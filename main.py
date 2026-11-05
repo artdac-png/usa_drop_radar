@@ -51,16 +51,30 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
+    # США - Товарные и купонные скидки
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
+    
+    # Великобритания
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
+    
+    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
+    
+    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
+    
+    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
+    
+    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
+    
+    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
@@ -88,28 +102,38 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
+    """Усиленный поиск промокодов и скидочных комбинаций."""
     text = f"{title} {summary}"
-    pattern = r'(?:code|coupon|gutschein|código|промокод|code:)\s*[:\-]?\s*([A-Za-z0-9_\-]+)'
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        code = match.group(1).strip()
-        if len(code) >= 3 and not code.lower() in ["the", "for", "and", "mit", "con"]:
-            return code.upper()
+    
+    # 1. Поиск прямых ключевых фраз (code: PROMO, use coupon SAVE20, w/ code EXTRA10, gutschein, promo, etc.)
+    pattern = r'(?:code|coupon|gutschein|código|промокод|promo|use|w/|with|extra)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    
+    stop_words = ["the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", "this", "your", "from"]
+    
+    for code in matches:
+        code_clean = code.strip().upper()
+        # Проверяем, что найденное слово похоже на код (есть цифры или оно в верхнем регистре)
+        if code_clean.lower() not in stop_words and len(code_clean) >= 3:
+            if any(char.isdigit() for char in code_clean) or code_clean.isupper():
+                return code_clean
+
+    # 2. Поиск вызовов вида "20% OFF", "EXTRA 15%"
+    extra_disc = re.search(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
+    if extra_disc:
+        return f"Доп. скидка {extra_disc.group(1).upper()} (Примените в корзине)"
+        
     return None
 
 def extract_hd_image(summary: str) -> str:
-    """Извлекает прямую ссылку на фото и преобразует её в полноразмерное HD качество."""
     if not summary:
         return None
         
-    # Ищем все ссылки на изображения
     img_matches = re.findall(r'(?:src|data-src)="([^"]+\.(?:jpg|png|jpeg)[^"]*)"', summary, re.IGNORECASE)
     if not img_matches:
         return None
 
     url = img_matches[0]
-
-    # Убираем параметры сжатия для серверов Pepper/Mydealz/Slickdeals
     url = re.sub(r'threads/raw/default/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
     url = re.sub(r'threads/thread_full_custom/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
     url = re.sub(r'/\d+x\d+/', '/800x800/', url)
@@ -144,7 +168,9 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 image_url = extract_hd_image(summary)
-                promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
+                
+                # Показываем блок промокода или доп. скидки
+                promo_block = f"🎟 **Промокод / Скидка:** `{promo_code}`\n" if promo_code else ""
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -179,7 +205,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [HD Image Signal] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Max Promo Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -188,7 +214,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar with HD Images is live!")
+    return web.Response(text="Global Multi-Brand Max Promo Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -203,7 +229,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с парсингом HD картинок запущен!")
+    print("🚀 Глобальный радар с максимальным уловом промокодов запущен!")
     
     while True:
         try:
