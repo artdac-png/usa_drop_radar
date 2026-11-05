@@ -5,6 +5,7 @@ import feedparser
 from aiogram import Bot
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from aiohttp import web
 
 load_dotenv()
 
@@ -39,7 +40,6 @@ async def scan_and_post(bot: Bot):
         deal_id = getattr(entry, 'id', link)
         brand = extract_brand(title)
 
-        # Проверка дубликатов в Supabase
         res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
         if res.data:
             continue
@@ -73,7 +73,6 @@ async def scan_and_post(bot: Bot):
                     disable_web_page_preview=False
                 )
 
-            # Сохранение в Supabase
             supabase.table("posted_deals").insert({
                 "deal_id": deal_id,
                 "title": title,
@@ -86,10 +85,23 @@ async def scan_and_post(bot: Bot):
         except Exception as e:
             print(f"❌ Ошибка отправки поста: {e}")
 
+async def handle_ping(request):
+    return web.Response(text="US Drop Radar is live!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
     bot = Bot(token=BOT_TOKEN)
+    await start_web_server()
 
-    print("🚀 Радар молниеносного поиска скидок в США запущен!")
+    print("🚀 Радар молниеносного поиска скидок в США запущен на Render!")
     print("🔎 Проверка каждые 3 минуты...")
     
     while True:
