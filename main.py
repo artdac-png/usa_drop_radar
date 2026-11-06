@@ -93,17 +93,19 @@ def extract_price(title: str, summary: str) -> str:
 def extract_promo_code(title: str, summary: str) -> str:
     """Извлекает промокод только из чистого текста, удаляя все URL и трекинг-коды."""
     text = f"{title} {summary}"
-    # Глобальная зачистка от URL перед поиском кодов
+    
+    # Очистка текста от мусора ПЕРЕД поиском промокода
     text = re.sub(r'https?://\S+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
     
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
+    # Расширенный список стоп-слов, включая "CODE"
     stop_words = [
         "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
         "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
-        "orders", "order", "with", "only", "checkout", "at", "here", "now"
+        "orders", "order", "with", "only", "checkout", "at", "here", "now", "code", "promo"
     ]
     
     for code in matches:
@@ -121,12 +123,10 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    # 1. Поиск ссылок прямой покупки/редиректа (Slickdeals)
     for url in urls:
         if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visit/thread", "visitthread", "out/", "checkout"]):
             return url
             
-    # 2. Поиск внешних доменов
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
         "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
@@ -135,51 +135,48 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
         if not any(domain in url.lower() for domain in forum_domains):
             return url
 
-    # 3. ГЕНЕРАТОР: Если ссылка всё еще не найдена (проблема Pepper сети), создаем её сами!
     pepper_domains = ["hotukdeals.com", "mydealz.de", "chollometro.com", "dealabs.com", "pepper.pl", "pepper.it"]
     if any(domain in forum_link for domain in pepper_domains):
-        # Ищем ID сделки в конце ссылки форума (например, -5024759)
         match = re.search(r'-(\d+)(?:/|\?|$)', forum_link)
         if match:
             deal_id = match.group(1)
             parsed_uri = urlparse(forum_link)
             base_domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
-            # Принудительно отдаем ссылку на редирект в магазин
             return f"{base_domain}/visit/thread/{deal_id}"
             
     return forum_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Принудительный HD апскейл для всех площадок."""
+    """Парсинг изображений ДО очистки HTML. Принудительный HD апскейл."""
     url = None
     
+    # 1. Проверяем стандартные RSS-теги (Pepper/HotUKDeals)
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
         url = entry.media_thumbnail[0]['url']
-    else:
-        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary if summary else "", re.IGNORECASE)
+    
+    # 2. Если RSS-тегов нет, ищем картинку прямо в СЫРОМ HTML (для Slickdeals США)
+    if not url and summary:
+        img_matches = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
         if not img_matches:
-            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary if summary else "", re.IGNORECASE)
+            img_matches = re.findall(r'(?:src|data-src)=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
         
         if img_matches:
             url = img_matches[0]
+            # Пропускаем трекинговые пиксели
             if "beacon" in url or "tracking" in url or ".gif" in url:
                 if len(img_matches) > 1:
                     url = img_matches[1]
                 else:
-                    return None
+                    url = None
 
     if not url:
         return None
 
-    # --- Тотальная очистка для HD качества ---
-    # Заменяем ЛЮБУЮ папку (thread_list_card, thread_full_screen) на raw/default
+    # --- Апскейл качества (HD) ---
     url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
-    # Вырезаем параметры сжатия (убивает мыло с HotUKDeals)
     url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
-    
-    # Для Slickdeals
     url = re.sub(r'/\d+x\d+/', '/800x800/', url)
     url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
 
@@ -196,6 +193,7 @@ async def scan_and_post(bot: Bot):
                 title = entry.title
                 forum_link = entry.link
                 deal_id = getattr(entry, 'id', forum_link)
+                # Берем сырой summary ДО любой очистки, чтобы достать картинку
                 summary = getattr(entry, 'summary', '')
                 
                 brand = find_matched_brand(title)
@@ -211,6 +209,7 @@ async def scan_and_post(bot: Bot):
                 if res.data:
                     continue
 
+                # Вытаскиваем картинку из сырого summary
                 image_url = extract_hd_image(entry, summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
@@ -253,7 +252,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Ultimate Fix Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [US Images Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -262,7 +261,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar HD/Links Fixed is live!")
+    return web.Response(text="Global Multi-Brand Radar HD/US Fixed is live!")
 
 async def start_web_server():
     app = web.Application()
