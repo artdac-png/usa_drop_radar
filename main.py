@@ -113,19 +113,16 @@ def extract_promo_code(title: str, summary: str) -> str:
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
-    """Универсальный генератор и извлекатель прямых ссылок для всех площадок."""
     if not summary:
         summary = ""
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    # 1. Поиск ссылок покупки Slickdeals / DealNews / BradsDeals
     redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws):
             return url
             
-    # 2. Внешние магазины (Amazon, Nike, Ebay и др.)
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
         "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
@@ -134,14 +131,12 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
         if not any(domain in url.lower() for domain in forum_domains):
             return url
 
-    # 3. Генератор редиректов для Slickdeals (США)
     if "slickdeals.net/f/" in forum_link:
         match = re.search(r'/f/(\d+)', forum_link)
         if match:
             deal_id = match.group(1)
             return f"https://slickdeals.net/?sdtid={deal_id}&sdfsc=1"
 
-    # 4. Генератор редиректов для Pepper (Европа)
     pepper_domains = ["hotukdeals.com", "mydealz.de", "chollometro.com", "dealabs.com", "pepper.pl", "pepper.it"]
     if any(domain in forum_link for domain in pepper_domains):
         match = re.search(r'-(\d+)(?:/|\?|$)', forum_link)
@@ -154,7 +149,7 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
     return forum_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Извлечение и апскейл изображений без потери медиа-данных США."""
+    """Стабильный извлекатель картинок для США и Европы без ломающих регулярных замен."""
     url = None
     
     if hasattr(entry, 'media_content') and entry.media_content:
@@ -181,11 +176,12 @@ def extract_hd_image(entry, summary: str) -> str:
     if url.startswith('//'):
         url = 'https:' + url
 
-    # Очистка качества (Slickdeals & Pepper)
-    url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
-    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
-    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-    url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
+    # Точечная коррекция размера изображений без слома URL
+    if "slickdeals.net" in url:
+        url = re.sub(r'threads/attachment/\d+/\d+/\d+/', 'threads/attachment/', url)
+        url = re.sub(r'/\d+x\d+/', '/800x800/', url)
+    elif "pepper.com" in url or "static-pepper" in url or "hotukdeals" in url:
+        url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
 
     return url
 
@@ -262,7 +258,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [US/Slickdeals Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [US Photo Fix] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -271,7 +267,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Final Fix is live!")
+    return web.Response(text="Global Multi-Brand Radar Live!")
 
 async def start_web_server():
     app = web.Application()
