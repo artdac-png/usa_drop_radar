@@ -21,7 +21,7 @@ TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis",
-    "zara", "mango", "h&m", "h m", "hm",
+    "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "zappos", "jomashop", "6pm"
 ]
 
@@ -45,6 +45,8 @@ CASHBACK_MAP = {
     "Levis": "TopCashback / iGraal (до 8%)",
     "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
+    "Massimo dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
+    "Massimo": "TopCashback / Beruby / iGraal (до 5-7%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
@@ -52,7 +54,7 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango+massimo&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
@@ -73,6 +75,8 @@ def find_matched_brand(title: str) -> str:
         if re.search(pattern, title_lower):
             if brand in ["h&m", "h m", "hm"]:
                 return "H&M"
+            if brand in ["massimo dutti", "massimo"]:
+                return "Massimo Dutti"
             return brand.capitalize()
     return None
 
@@ -133,7 +137,6 @@ def extract_best_link(summary: str, default_link: str) -> str:
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Универсальный извлекатель изображений в высоком разрешении (HD)."""
     url = None
     
     if hasattr(entry, 'media_content') and entry.media_content:
@@ -160,7 +163,6 @@ def extract_hd_image(entry, summary: str) -> str:
     if url.startswith('//'):
         url = 'https:' + url
 
-    # Тотальный HD-апскейл для всех источников (США + Германия/Европа)
     url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
     url = re.sub(r'threads/[^/]+/', 'threads/raw/default/', url)
     url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
@@ -203,7 +205,7 @@ async def scan_and_post(bot: Bot):
                 ])
 
                 post_text = (
-                    f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
+                    f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
                     f"{flag}\n\n"
                     f"📦 **{title}**\n"
                     f"🏷 **Цена:** `{price}`\n"
@@ -236,7 +238,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [HD Global Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Massimo Dutti Added] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -245,7 +247,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar HD Fixed is live!")
+    return web.Response(text="Global Multi-Brand Radar Live!")
 
 async def start_web_server():
     app = web.Application()
