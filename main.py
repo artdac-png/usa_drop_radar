@@ -90,6 +90,7 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
+    """Извлекает реальные промокоды и исключает служебные термины доставки/сервисов."""
     text = f"{title} {summary}"
     pattern = r'(?:code|coupon|gutschein|código|промокод|promo|use|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
@@ -109,15 +110,18 @@ def extract_promo_code(title: str, summary: str) -> str:
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
+    """Извлекает прямую редирект-ссылку на покупку в магазине из HTML-описания."""
     if not summary:
         return forum_link
     
     urls = re.findall(r'href="(https?://[^"]+)"', summary, re.IGNORECASE)
     
+    # 1. Поиск прямых ссылок редиректа на покупку в магазине
     for url in urls:
         if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visitthread", "checkout", "out/"]):
             return url
             
+    # 2. Поиск внешних доменов онлайн-магазинов
     forum_domains = [
         "slickdeals.net/f/", "mydealz.de/deals/", "chollometro.com/ofertas/", 
         "hotukdeals.com/deals/", "dealabs.com/bons-plans/", "pepper.pl/promocje/"
@@ -174,7 +178,7 @@ async def scan_and_post(bot: Bot):
                 image_url = extract_hd_image(summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                # Создаем Inline-кнопки под сообщением
+                # Создание двух интерактивных Inline-кнопок
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🛒 В магазин (1 клик)", url=store_link)],
                     [InlineKeyboardButton(text="💬 Обсуждение на форуме", url=forum_link)]
@@ -214,7 +218,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Inline Buttons Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Inline Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -223,7 +227,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Inline Keyboard Radar is live!")
+    return web.Response(text="Global Multi-Brand Radar with Inline Buttons is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -238,7 +242,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с интерактивными кнопками запущен!")
+    print("🚀 Глобальный радар запущен!")
     
     while True:
         try:
