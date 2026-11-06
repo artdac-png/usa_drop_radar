@@ -90,36 +90,42 @@ def extract_price(title: str, summary: str) -> str:
 
 def extract_promo_code(title: str, summary: str) -> str:
     text = f"{title} {summary}"
-    pattern = r'(?:code|coupon|gutschein|código|промокод|promo|use|w/|with|extra)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
+    pattern = r'(?:code|coupon|gutschein|código|промокод|promo|use|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
-    stop_words = ["the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", "this", "your", "from"]
+    stop_words = [
+        "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
+        "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
+        "orders", "order", "with", "only"
+    ]
     
     for code in matches:
         code_clean = code.strip().upper()
         if code_clean.lower() not in stop_words and len(code_clean) >= 3:
             if any(char.isdigit() for char in code_clean) or code_clean.isupper():
                 return code_clean
-
-    extra_disc = re.search(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
-    if extra_disc:
-        return f"Доп. скидка {extra_disc.group(1).upper()} (Примените в корзине)"
-        
+                
     return None
 
-def extract_direct_store_link(summary: str) -> str:
-    """Извлекает прямую ссылку на товар/магазин из описания."""
-    if not summary:
-        return None
+def extract_direct_store_link(title: str, summary: str, forum_link: str) -> str:
+    """Усиленный поиск прямой ссылки на магазин."""
+    text = f"{title} {summary}"
     
-    matches = re.findall(r'href="(https?://[^"]+)"', summary, re.IGNORECASE)
-    for url in matches:
-        if not any(domain in url.lower() for domain in [
-            "slickdeals.net", "mydealz.de", "chollometro.com", 
-            "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
-        ]):
-            return url
-            
+    # Ищем все URL в тексте и описании
+    matches = re.findall(r'href="(https?://[^"]+)"|https?://[^\s<>"]+', text, re.IGNORECASE)
+    
+    forum_domains = [
+        "slickdeals.net", "mydealz.de", "chollometro.com", 
+        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
+    ]
+
+    for item in matches:
+        url = item[0] if isinstance(item, tuple) and item[0] else item
+        if isinstance(url, str) and url.startswith("http"):
+            # Отсекаем ссылки на сам скидочный форум
+            if not any(domain in url.lower() for domain in forum_domains):
+                return url
+                
     return None
 
 def extract_hd_image(summary: str) -> str:
@@ -158,7 +164,7 @@ async def scan_and_post(bot: Bot):
 
                 price = extract_price(title, summary)
                 promo_code = extract_promo_code(title, summary)
-                direct_link = extract_direct_store_link(summary)
+                direct_link = extract_direct_store_link(title, summary, forum_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -166,16 +172,19 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 image_url = extract_hd_image(summary)
-                promo_block = f"🎟 **Промокод / Скидка:** `{promo_code}`\n" if promo_code else ""
+                promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                # Формируем блок ссылок: 1 или 2 кнопки
-                if direct_link:
+                # Формируем 2 обязательные ссылки
+                if direct_link and direct_link != forum_link:
                     links_block = (
                         f"🛒 [КУПИТЬ В МАГАЗИНЕ]({direct_link})\n"
                         f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
                     )
                 else:
-                    links_block = f"🔗 [КУПИТЬ В 1 КЛИК]({forum_link})"
+                    links_block = (
+                        f"🛒 [КУПИТЬ В 1 КЛИК]({forum_link})\n"
+                        f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
+                    )
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -210,7 +219,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Dual Link Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Dual Link Fix] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -219,7 +228,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Dual Link Radar is live!")
+    return web.Response(text="Global Multi-Brand Dual Link Fixed Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -234,7 +243,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с двойными ссылками запущен!")
+    print("🚀 Глобальный радар запущен!")
     
     while True:
         try:
