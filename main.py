@@ -3,6 +3,7 @@ import os
 import re
 import feedparser
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from aiohttp import web
@@ -46,7 +47,7 @@ CASHBACK_MAP = {
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
-    "Zappos": "TopCashback / Rakuten (do 5%)",
+    "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)"
 }
 
@@ -108,19 +109,15 @@ def extract_promo_code(title: str, summary: str) -> str:
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
-    """Достает прямую редирект-ссылку на покупку в магазине из HTML-описания."""
     if not summary:
         return forum_link
     
-    # Ищем ссылки с маркерами прямой покупки (buyfromdeal, sdtid, redirect, target)
     urls = re.findall(r'href="(https?://[^"]+)"', summary, re.IGNORECASE)
     
-    # 1. Поиск ссылок покупки на Slickdeals/Pepper
     for url in urls:
         if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visitthread", "checkout", "out/"]):
             return url
             
-    # 2. Поиск чистых внешних доменов магазина (Amazon, Nike, Adidas и др.)
     forum_domains = [
         "slickdeals.net/f/", "mydealz.de/deals/", "chollometro.com/ofertas/", 
         "hotukdeals.com/deals/", "dealabs.com/bons-plans/", "pepper.pl/promocje/"
@@ -177,11 +174,11 @@ async def scan_and_post(bot: Bot):
                 image_url = extract_hd_image(summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                # Первая ссылка перенаправляет в магазин, вторая ведет на ветку форума
-                links_block = (
-                    f"🛒 [КУПИТЬ В МАГАЗИНЕ]({store_link})\n"
-                    f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
-                )
+                # Создаем Inline-кнопки под сообщением
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 В магазин (1 клик)", url=store_link)],
+                    [InlineKeyboardButton(text="💬 Обсуждение на форуме", url=forum_link)]
+                ])
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -190,8 +187,7 @@ async def scan_and_post(bot: Bot):
                     f"🏷 **Цена:** `{price}`\n"
                     f"{promo_block}"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
-                    f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
-                    f"{links_block}"
+                    f"💳 **Кэшбэк:** `{cashback_info}`"
                 )
 
                 try:
@@ -200,14 +196,16 @@ async def scan_and_post(bot: Bot):
                             chat_id=CHANNEL_ID,
                             photo=image_url,
                             caption=post_text,
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=keyboard
                         )
                     else:
                         await bot.send_message(
                             chat_id=CHANNEL_ID,
                             text=post_text,
                             parse_mode="Markdown",
-                            disable_web_page_preview=False
+                            disable_web_page_preview=False,
+                            reply_markup=keyboard
                         )
 
                     supabase.table("posted_deals").insert({
@@ -216,7 +214,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Store Link Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Inline Buttons Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -225,7 +223,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Store Link Fixed Radar is live!")
+    return web.Response(text="Global Multi-Brand Inline Keyboard Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -240,7 +238,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар запущен!")
+    print("🚀 Глобальный радар с интерактивными кнопками запущен!")
     
     while True:
         try:
