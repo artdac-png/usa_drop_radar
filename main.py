@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import feedparser
+from urllib.parse import urlparse
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
@@ -90,10 +91,11 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
-    """Ищет промокод ТОЛЬКО в чистом тексте, исключая скрытые ссылки и HTML-атрибуты."""
-    # Удаляем все HTML-теги из summary, чтобы не парсить IDшники из ссылок
-    clean_summary = re.sub(r'<[^>]+>', ' ', summary)
-    text = f"{title} {clean_summary}"
+    """Извлекает промокод только из чистого текста, удаляя все URL и трекинг-коды."""
+    text = f"{title} {summary}"
+    # Глобальная зачистка от URL перед поиском кодов
+    text = re.sub(r'https?://\S+', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
     
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
@@ -107,38 +109,48 @@ def extract_promo_code(title: str, summary: str) -> str:
     for code in matches:
         code_clean = code.strip().upper()
         if code_clean.lower() not in stop_words and len(code_clean) >= 3:
-            # Требуем наличие цифры или строго заглавный промокод
             if any(char.isdigit() for char in code_clean) or code_clean.isupper():
                 return code_clean
                 
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
-    """Гарантированно вытаскивает прямую ссылку на магазин, включая площадки HotUKDeals/Mydealz."""
+    """Ищет прямую ссылку, а если её нет — ГЕНЕРИРУЕТ её для Pepper площадок."""
     if not summary:
-        return forum_link
-    
+        summary = ""
+        
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    # 1. Поиск редиректов Slickdeals и сети Pepper (HotUKDeals, Mydealz, Chollometro)
+    # 1. Поиск ссылок прямой покупки/редиректа (Slickdeals)
     for url in urls:
-        if any(keyword in url.lower() for keyword in ["sdtid", "buyfromdeal", "visit/thread", "visit/comment", "out/", "checkout"]):
+        if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visit/thread", "visitthread", "out/", "checkout"]):
             return url
             
-    # 2. Поиск внешних доменов онлайн-магазинов (исключая сами форумы)
+    # 2. Поиск внешних доменов
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
         "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
     ]
     for url in urls:
-        # Проверяем, что домена форума нет в ссылке
         if not any(domain in url.lower() for domain in forum_domains):
             return url
+
+    # 3. ГЕНЕРАТОР: Если ссылка всё еще не найдена (проблема Pepper сети), создаем её сами!
+    pepper_domains = ["hotukdeals.com", "mydealz.de", "chollometro.com", "dealabs.com", "pepper.pl", "pepper.it"]
+    if any(domain in forum_link for domain in pepper_domains):
+        # Ищем ID сделки в конце ссылки форума (например, -5024759)
+        match = re.search(r'-(\d+)(?:/|\?|$)', forum_link)
+        if match:
+            deal_id = match.group(1)
+            parsed_uri = urlparse(forum_link)
+            base_domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+            # Принудительно отдаем ссылку на редирект в магазин
+            return f"{base_domain}/visit/thread/{deal_id}"
             
     return forum_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Парсинг изображений с принудительным улучшением качества (upscale)."""
+    """Принудительный HD апскейл для всех площадок."""
     url = None
     
     if hasattr(entry, 'media_content') and entry.media_content:
@@ -146,13 +158,12 @@ def extract_hd_image(entry, summary: str) -> str:
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
         url = entry.media_thumbnail[0]['url']
     else:
-        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary if summary else "", re.IGNORECASE)
         if not img_matches:
-            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary, re.IGNORECASE)
+            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary if summary else "", re.IGNORECASE)
         
         if img_matches:
             url = img_matches[0]
-            # Отсекаем прозрачные пиксели-трекеры
             if "beacon" in url or "tracking" in url or ".gif" in url:
                 if len(img_matches) > 1:
                     url = img_matches[1]
@@ -162,15 +173,15 @@ def extract_hd_image(entry, summary: str) -> str:
     if not url:
         return None
 
-    # --- Улучшение качества ---
-    # Для Slickdeals
-    url = re.sub(r'threads/raw/default/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
-    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-    url = re.sub(r'_thumb\.', '.', url)
-    url = re.sub(r'_small\.', '.', url)
+    # --- Тотальная очистка для HD качества ---
+    # Заменяем ЛЮБУЮ папку (thread_list_card, thread_full_screen) на raw/default
+    url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
+    # Вырезаем параметры сжатия (убивает мыло с HotUKDeals)
+    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
     
-    # Для сети Pepper (HotUKDeals, Mydealz, Chollometro) - заменяем низкое качество на 1024x1024, 100%
-    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/re/1024x1024/qt/100/', url)
+    # Для Slickdeals
+    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
+    url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
 
     return url
 
@@ -242,7 +253,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [EU/UK Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Ultimate Fix Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -251,7 +262,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar with Clean Promo & HD is live!")
+    return web.Response(text="Global Multi-Brand Radar HD/Links Fixed is live!")
 
 async def start_web_server():
     app = web.Application()
