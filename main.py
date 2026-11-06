@@ -112,19 +112,16 @@ def extract_promo_code(title: str, summary: str) -> str:
     return None
 
 def extract_best_link(summary: str, default_link: str) -> str:
-    """Извлекает лучшую доступную ссылку (прямой редирект или стандартную ссылку из RSS)."""
     if not summary:
         return default_link
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    # 1. Приоритет ссылки редиректа в магазин
     redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws):
             return url
             
-    # 2. Поиск внешних ссылок магазинов
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
         "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
@@ -136,6 +133,7 @@ def extract_best_link(summary: str, default_link: str) -> str:
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
+    """Универсальный извлекатель изображений в высоком разрешении (HD)."""
     url = None
     
     if hasattr(entry, 'media_content') and entry.media_content:
@@ -162,11 +160,12 @@ def extract_hd_image(entry, summary: str) -> str:
     if url.startswith('//'):
         url = 'https:' + url
 
-    if "slickdeals.net" in url:
-        url = re.sub(r'threads/attachment/\d+/\d+/\d+/', 'threads/attachment/', url)
-        url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-    elif "pepper.com" in url or "static-pepper" in url or "hotukdeals" in url:
-        url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
+    # Тотальный HD-апскейл для всех источников (США + Германия/Европа)
+    url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
+    url = re.sub(r'threads/[^/]+/', 'threads/raw/default/', url)
+    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
+    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
+    url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
 
     return url
 
@@ -199,7 +198,6 @@ async def scan_and_post(bot: Bot):
                 image_url = extract_hd_image(entry, summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                # Одна лаконичная интерактивная кнопка
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
                 ])
@@ -238,7 +236,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Single Link Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [HD Global Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -247,7 +245,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Single Link Radar is live!")
+    return web.Response(text="Global Multi-Brand Radar HD Fixed is live!")
 
 async def start_web_server():
     app = web.Application()
