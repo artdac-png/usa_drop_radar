@@ -51,30 +51,17 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    # США - Товарные и купонные скидки
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
-    
-    # Великобритания
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
-    
-    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
-    
-    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
-    
-    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
-    
-    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
-    
-    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
@@ -102,10 +89,7 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
-    """Усиленный поиск промокодов и скидочных комбинаций."""
     text = f"{title} {summary}"
-    
-    # 1. Поиск прямых ключевых фраз (code: PROMO, use coupon SAVE20, w/ code EXTRA10, gutschein, promo, etc.)
     pattern = r'(?:code|coupon|gutschein|código|промокод|promo|use|w/|with|extra)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
@@ -113,16 +97,29 @@ def extract_promo_code(title: str, summary: str) -> str:
     
     for code in matches:
         code_clean = code.strip().upper()
-        # Проверяем, что найденное слово похоже на код (есть цифры или оно в верхнем регистре)
         if code_clean.lower() not in stop_words and len(code_clean) >= 3:
             if any(char.isdigit() for char in code_clean) or code_clean.isupper():
                 return code_clean
 
-    # 2. Поиск вызовов вида "20% OFF", "EXTRA 15%"
     extra_disc = re.search(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
     if extra_disc:
         return f"Доп. скидка {extra_disc.group(1).upper()} (Примените в корзине)"
         
+    return None
+
+def extract_direct_store_link(summary: str) -> str:
+    """Извлекает прямую ссылку на товар/магазин из описания."""
+    if not summary:
+        return None
+    
+    matches = re.findall(r'href="(https?://[^"]+)"', summary, re.IGNORECASE)
+    for url in matches:
+        if not any(domain in url.lower() for domain in [
+            "slickdeals.net", "mydealz.de", "chollometro.com", 
+            "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
+        ]):
+            return url
+            
     return None
 
 def extract_hd_image(summary: str) -> str:
@@ -151,8 +148,8 @@ async def scan_and_post(bot: Bot):
             
             for entry in feed.entries:
                 title = entry.title
-                link = entry.link
-                deal_id = getattr(entry, 'id', link)
+                forum_link = entry.link
+                deal_id = getattr(entry, 'id', forum_link)
                 summary = getattr(entry, 'summary', '')
                 
                 brand = find_matched_brand(title)
@@ -161,6 +158,7 @@ async def scan_and_post(bot: Bot):
 
                 price = extract_price(title, summary)
                 promo_code = extract_promo_code(title, summary)
+                direct_link = extract_direct_store_link(summary)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -168,9 +166,16 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 image_url = extract_hd_image(summary)
-                
-                # Показываем блок промокода или доп. скидки
                 promo_block = f"🎟 **Промокод / Скидка:** `{promo_code}`\n" if promo_code else ""
+
+                # Формируем блок ссылок: 1 или 2 кнопки
+                if direct_link:
+                    links_block = (
+                        f"🛒 [КУПИТЬ В МАГАЗИНЕ]({direct_link})\n"
+                        f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
+                    )
+                else:
+                    links_block = f"🔗 [КУПИТЬ В 1 КЛИК]({forum_link})"
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -180,7 +185,7 @@ async def scan_and_post(bot: Bot):
                     f"{promo_block}"
                     f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`\n\n"
-                    f"🔗 [КУПИТЬ В 1 КЛИК]({link})"
+                    f"{links_block}"
                 )
 
                 try:
@@ -205,7 +210,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Max Promo Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Dual Link Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -214,7 +219,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Max Promo Radar is live!")
+    return web.Response(text="Global Multi-Brand Dual Link Radar is live!")
 
 async def start_web_server():
     app = web.Application()
@@ -229,7 +234,7 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     await start_web_server()
 
-    print("🚀 Глобальный радар с максимальным уловом промокодов запущен!")
+    print("🚀 Глобальный радар с двойными ссылками запущен!")
     
     while True:
         try:
