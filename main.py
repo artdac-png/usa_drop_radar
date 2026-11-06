@@ -91,17 +91,14 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
-    """Извлекает промокод только из чистого текста, удаляя все URL и трекинг-коды."""
     text = f"{title} {summary}"
     
-    # Очистка текста от мусора ПЕРЕД поиском промокода
     text = re.sub(r'https?://\S+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
     
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
-    # Расширенный список стоп-слов, включая "CODE"
     stop_words = [
         "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
         "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
@@ -117,24 +114,27 @@ def extract_promo_code(title: str, summary: str) -> str:
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
-    """Ищет прямую ссылку, а если её нет — ГЕНЕРИРУЕТ её для Pepper площадок."""
     if not summary:
         summary = ""
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
+    # 1. Поиск редиректов, включая DealNews (lw/) и Brad's Deals
+    redirect_kws = ["buyfromdeal", "sdtid", "visit/thread", "visitthread", "out/", "checkout", "lw/", "redirect"]
     for url in urls:
-        if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visit/thread", "visitthread", "out/", "checkout"]):
+        if any(keyword in url.lower() for keyword in redirect_kws):
             return url
             
+    # 2. Поиск внешних доменов
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
-        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
+        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
     ]
     for url in urls:
         if not any(domain in url.lower() for domain in forum_domains):
             return url
 
+    # 3. Pepper ID генератор
     pepper_domains = ["hotukdeals.com", "mydealz.de", "chollometro.com", "dealabs.com", "pepper.pl", "pepper.it"]
     if any(domain in forum_link for domain in pepper_domains):
         match = re.search(r'-(\d+)(?:/|\?|$)', forum_link)
@@ -147,34 +147,36 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
     return forum_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Парсинг изображений ДО очистки HTML. Принудительный HD апскейл."""
     url = None
     
-    # 1. Проверяем стандартные RSS-теги (Pepper/HotUKDeals)
+    # 1. Теги media
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
         url = entry.media_thumbnail[0]['url']
-    
-    # 2. Если RSS-тегов нет, ищем картинку прямо в СЫРОМ HTML (для Slickdeals США)
+    # 2. Теги enclosure (Специфика DealNews и BradsDeals)
+    elif hasattr(entry, 'enclosures') and entry.enclosures:
+        url = entry.enclosures[0].get('href')
+        
+    # 3. Поиск внутри HTML
     if not url and summary:
-        img_matches = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
         if not img_matches:
-            img_matches = re.findall(r'(?:src|data-src)=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
+            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary, re.IGNORECASE)
         
         if img_matches:
-            url = img_matches[0]
-            # Пропускаем трекинговые пиксели
-            if "beacon" in url or "tracking" in url or ".gif" in url:
-                if len(img_matches) > 1:
-                    url = img_matches[1]
-                else:
-                    url = None
+            for img_url in img_matches:
+                if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1"]):
+                    url = img_url
+                    break
 
     if not url:
         return None
+        
+    if url.startswith('//'):
+        url = 'https:' + url
 
-    # --- Апскейл качества (HD) ---
+    # Апскейл
     url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
     url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
     url = re.sub(r'/\d+x\d+/', '/800x800/', url)
@@ -193,7 +195,6 @@ async def scan_and_post(bot: Bot):
                 title = entry.title
                 forum_link = entry.link
                 deal_id = getattr(entry, 'id', forum_link)
-                # Берем сырой summary ДО любой очистки, чтобы достать картинку
                 summary = getattr(entry, 'summary', '')
                 
                 brand = find_matched_brand(title)
@@ -209,14 +210,19 @@ async def scan_and_post(bot: Bot):
                 if res.data:
                     continue
 
-                # Вытаскиваем картинку из сырого summary
                 image_url = extract_hd_image(entry, summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🛒 В магазин (1 клик)", url=store_link)],
-                    [InlineKeyboardButton(text="💬 Обсуждение на форуме", url=forum_link)]
-                ])
+                # Логика умных кнопок: если прямая ссылка не найдена, выводим ОДНУ кнопку
+                if store_link and store_link != forum_link:
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🛒 В магазин (1 клик)", url=store_link)],
+                        [InlineKeyboardButton(text="💬 Обсуждение на форуме", url=forum_link)]
+                    ])
+                else:
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔗 Купить (1 клик)", url=forum_link)]
+                    ])
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -252,7 +258,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [US Images Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [DealNews Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -261,7 +267,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar HD/US Fixed is live!")
+    return web.Response(text="Global Multi-Brand Radar Perfected is live!")
 
 async def start_web_server():
     app = web.Application()
