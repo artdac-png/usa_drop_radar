@@ -94,7 +94,16 @@ def extract_price(title: str, summary: str) -> str:
             
     return "См. на сайте"
 
-def extract_promo_code(title: str, summary: str) -> str:
+def extract_promo_code(entry, title: str, summary: str) -> str:
+    """Точный парсинг: сначала из метатегов RSS (Pepper/HotUKDeals), затем из текста."""
+    
+    # 1. Сначала ищем выделенный код в атрибутах RSS (специфика HotUKDeals/Mydealz)
+    if hasattr(entry, 'pepper_code') and entry.pepper_code:
+        return entry.pepper_code.strip().upper()
+    if hasattr(entry, 'couponcode') and entry.couponcode:
+        return entry.couponcode.strip().upper()
+
+    # 2. Если в метатегах нет — ищем в тексте с жесткой фильтрацией слов-описаний
     text = f"{title} {summary}"
     text = re.sub(r'https?://\S+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
@@ -102,10 +111,12 @@ def extract_promo_code(title: str, summary: str) -> str:
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
+    # Исключаем описательные слова одежды/обуви, чтобы не было ошибочных кодов вроде BREATHABLE
     stop_words = [
         "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
         "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
-        "orders", "order", "with", "only", "checkout", "at", "here", "now", "code", "promo"
+        "orders", "order", "with", "only", "checkout", "at", "here", "now", "code", "promo",
+        "breathable", "leather", "cotton", "trainers", "sneakers", "shoes", "black", "white", "sizes"
     ]
     
     for code in matches:
@@ -138,10 +149,8 @@ def extract_best_link(summary: str, default_link: str) -> str:
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Извлекает 100% валидную ссылку на изображение с автофиксом протоколов."""
     url = None
     
-    # 1. Поиск в медиа-тегах RSS
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
@@ -149,7 +158,6 @@ def extract_hd_image(entry, summary: str) -> str:
     elif hasattr(entry, 'enclosures') and entry.enclosures:
         url = entry.enclosures[0].get('href')
 
-    # 2. Поиск в HTML (content:encoded или summary)
     raw_html = ""
     if hasattr(entry, 'content') and entry.content:
         raw_html += entry.content[0].value
@@ -167,13 +175,11 @@ def extract_hd_image(entry, summary: str) -> str:
     if not url:
         return None
 
-    # Принудительная достройка протокола для Slickdeals США (превращает //static... в https://static...)
     if url.startswith('//'):
         url = 'https:' + url
     elif url.startswith('/'):
         url = 'https://slickdeals.net' + url
 
-    # Апскейл качества без повреждения URL
     if "slickdeals.net" in url:
         url = re.sub(r'/\d+x\d+/', '/800x800/', url)
         url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
@@ -200,7 +206,7 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 price = extract_price(title, summary)
-                promo_code = extract_promo_code(title, summary)
+                promo_code = extract_promo_code(entry, title, summary)
                 target_link = extract_best_link(summary, main_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
@@ -249,7 +255,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Photo Protocol Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Pepper Code Fix] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -258,7 +264,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Photo Fixed is live!")
+    return web.Response(text="Global Multi-Brand Radar Live!")
 
 async def start_web_server():
     app = web.Application()
