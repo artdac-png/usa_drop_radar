@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 import feedparser
-from urllib.parse import urlparse
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
@@ -112,17 +111,20 @@ def extract_promo_code(title: str, summary: str) -> str:
                 
     return None
 
-def extract_store_buy_link(summary: str, forum_link: str) -> str:
+def extract_best_link(summary: str, default_link: str) -> str:
+    """Извлекает лучшую доступную ссылку (прямой редирект или стандартную ссылку из RSS)."""
     if not summary:
-        summary = ""
+        return default_link
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
+    # 1. Приоритет ссылки редиректа в магазин
     redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws):
             return url
             
+    # 2. Поиск внешних ссылок магазинов
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
         "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
@@ -131,25 +133,9 @@ def extract_store_buy_link(summary: str, forum_link: str) -> str:
         if not any(domain in url.lower() for domain in forum_domains):
             return url
 
-    if "slickdeals.net/f/" in forum_link:
-        match = re.search(r'/f/(\d+)', forum_link)
-        if match:
-            deal_id = match.group(1)
-            return f"https://slickdeals.net/?sdtid={deal_id}&sdfsc=1"
-
-    pepper_domains = ["hotukdeals.com", "mydealz.de", "chollometro.com", "dealabs.com", "pepper.pl", "pepper.it"]
-    if any(domain in forum_link for domain in pepper_domains):
-        match = re.search(r'-(\d+)(?:/|\?|$)', forum_link)
-        if match:
-            deal_id = match.group(1)
-            parsed_uri = urlparse(forum_link)
-            base_domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
-            return f"{base_domain}/visit/thread/{deal_id}"
-            
-    return forum_link
+    return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Стабильный извлекатель картинок для США и Европы без ломающих регулярных замен."""
     url = None
     
     if hasattr(entry, 'media_content') and entry.media_content:
@@ -176,7 +162,6 @@ def extract_hd_image(entry, summary: str) -> str:
     if url.startswith('//'):
         url = 'https:' + url
 
-    # Точечная коррекция размера изображений без слома URL
     if "slickdeals.net" in url:
         url = re.sub(r'threads/attachment/\d+/\d+/\d+/', 'threads/attachment/', url)
         url = re.sub(r'/\d+x\d+/', '/800x800/', url)
@@ -194,8 +179,8 @@ async def scan_and_post(bot: Bot):
             
             for entry in feed.entries:
                 title = entry.title
-                forum_link = entry.link
-                deal_id = getattr(entry, 'id', forum_link)
+                main_link = entry.link
+                deal_id = getattr(entry, 'id', main_link)
                 summary = getattr(entry, 'summary', '')
                 
                 brand = find_matched_brand(title)
@@ -204,7 +189,7 @@ async def scan_and_post(bot: Bot):
 
                 price = extract_price(title, summary)
                 promo_code = extract_promo_code(title, summary)
-                store_link = extract_store_buy_link(summary, forum_link)
+                target_link = extract_best_link(summary, main_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -214,15 +199,10 @@ async def scan_and_post(bot: Bot):
                 image_url = extract_hd_image(entry, summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                if store_link and store_link != forum_link:
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🛒 В магазин (1 клик)", url=store_link)],
-                        [InlineKeyboardButton(text="💬 Обсуждение на форуме", url=forum_link)]
-                    ])
-                else:
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🔗 Купить (1 клик)", url=forum_link)]
-                    ])
+                # Одна лаконичная интерактивная кнопка
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
+                ])
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -258,7 +238,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [US Photo Fix] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Single Link Radar] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -267,7 +247,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Live!")
+    return web.Response(text="Global Multi-Brand Single Link Radar is live!")
 
 async def start_web_server():
     app = web.Application()
