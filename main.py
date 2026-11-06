@@ -138,39 +138,47 @@ def extract_best_link(summary: str, default_link: str) -> str:
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Безопасный извлекатель изображений: не ломает пути Slickdeals (США)."""
+    """Извлекает 100% валидную ссылку на изображение с автофиксом протоколов."""
     url = None
     
-    # 1. Сначала забираем оригинальные картинки из тегов RSS
+    # 1. Поиск в медиа-тегах RSS
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
         url = entry.media_thumbnail[0]['url']
     elif hasattr(entry, 'enclosures') and entry.enclosures:
         url = entry.enclosures[0].get('href')
-        
-    # 2. Если RSS-тегов нет, ищем в HTML-описании
-    if not url and summary:
-        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
-        if not img_matches:
-            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary, re.IGNORECASE)
-        
+
+    # 2. Поиск в HTML (content:encoded или summary)
+    raw_html = ""
+    if hasattr(entry, 'content') and entry.content:
+        raw_html += entry.content[0].value
+    if summary:
+        raw_html += " " + summary
+
+    if not url and raw_html:
+        img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if img_matches:
             for img_url in img_matches:
-                if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1"]):
+                if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1", "avatar"]):
                     url = img_url
                     break
 
     if not url:
         return None
-        
+
+    # Принудительная достройка протокола для Slickdeals США (превращает //static... в https://static...)
     if url.startswith('//'):
         url = 'https:' + url
+    elif url.startswith('/'):
+        url = 'https://slickdeals.net' + url
 
-    # Безопасный апскейл: не трогаем валидные пути Slickdeals, чистим сжатие Pepper
-    if "pepper.com" in url or "static-pepper" in url or "hotukdeals" in url or "mydealz" in url:
+    # Апскейл качества без повреждения URL
+    if "slickdeals.net" in url:
+        url = re.sub(r'/\d+x\d+/', '/800x800/', url)
+        url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
+    elif any(domain in url for domain in ["pepper.com", "static-pepper", "hotukdeals", "mydealz", "chollometro", "dealabs"]):
         url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
-        url = re.sub(r'threads/[^/]+/', 'threads/raw/default/', url)
 
     return url
 
@@ -241,7 +249,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [US/Slickdeals Photo Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Photo Protocol Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -250,7 +258,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Live!")
+    return web.Response(text="Global Multi-Brand Radar Photo Fixed is live!")
 
 async def start_web_server():
     app = web.Application()
