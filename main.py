@@ -46,7 +46,7 @@ CASHBACK_MAP = {
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
-    "Zappos": "TopCashback / Rakuten (до 5%)",
+    "Zappos": "TopCashback / Rakuten (do 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)"
 }
 
@@ -107,26 +107,29 @@ def extract_promo_code(title: str, summary: str) -> str:
                 
     return None
 
-def extract_direct_store_link(title: str, summary: str, forum_link: str) -> str:
-    """Усиленный поиск прямой ссылки на магазин."""
-    text = f"{title} {summary}"
+def extract_store_buy_link(summary: str, forum_link: str) -> str:
+    """Достает прямую редирект-ссылку на покупку в магазине из HTML-описания."""
+    if not summary:
+        return forum_link
     
-    # Ищем все URL в тексте и описании
-    matches = re.findall(r'href="(https?://[^"]+)"|https?://[^\s<>"]+', text, re.IGNORECASE)
+    # Ищем ссылки с маркерами прямой покупки (buyfromdeal, sdtid, redirect, target)
+    urls = re.findall(r'href="(https?://[^"]+)"', summary, re.IGNORECASE)
     
+    # 1. Поиск ссылок покупки на Slickdeals/Pepper
+    for url in urls:
+        if any(keyword in url.lower() for keyword in ["buyfromdeal", "sdtid", "visitthread", "checkout", "out/"]):
+            return url
+            
+    # 2. Поиск чистых внешних доменов магазина (Amazon, Nike, Adidas и др.)
     forum_domains = [
-        "slickdeals.net", "mydealz.de", "chollometro.com", 
-        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
+        "slickdeals.net/f/", "mydealz.de/deals/", "chollometro.com/ofertas/", 
+        "hotukdeals.com/deals/", "dealabs.com/bons-plans/", "pepper.pl/promocje/"
     ]
-
-    for item in matches:
-        url = item[0] if isinstance(item, tuple) and item[0] else item
-        if isinstance(url, str) and url.startswith("http"):
-            # Отсекаем ссылки на сам скидочный форум
-            if not any(domain in url.lower() for domain in forum_domains):
-                return url
-                
-    return None
+    for url in urls:
+        if not any(domain in url.lower() for domain in forum_domains):
+            return url
+            
+    return forum_link
 
 def extract_hd_image(summary: str) -> str:
     if not summary:
@@ -164,7 +167,7 @@ async def scan_and_post(bot: Bot):
 
                 price = extract_price(title, summary)
                 promo_code = extract_promo_code(title, summary)
-                direct_link = extract_direct_store_link(title, summary, forum_link)
+                store_link = extract_store_buy_link(summary, forum_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
                 res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
@@ -174,17 +177,11 @@ async def scan_and_post(bot: Bot):
                 image_url = extract_hd_image(summary)
                 promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
-                # Формируем 2 обязательные ссылки
-                if direct_link and direct_link != forum_link:
-                    links_block = (
-                        f"🛒 [КУПИТЬ В МАГАЗИНЕ]({direct_link})\n"
-                        f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
-                    )
-                else:
-                    links_block = (
-                        f"🛒 [КУПИТЬ В 1 КЛИК]({forum_link})\n"
-                        f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
-                    )
+                # Первая ссылка перенаправляет в магазин, вторая ведет на ветку форума
+                links_block = (
+                    f"🛒 [КУПИТЬ В МАГАЗИНЕ]({store_link})\n"
+                    f"💬 [ОБСУЖДЕНИЕ НА ФОРУМЕ]({forum_link})"
+                )
 
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '')}**\n"
@@ -219,7 +216,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Dual Link Fix] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Store Link Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -228,7 +225,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Dual Link Fixed Radar is live!")
+    return web.Response(text="Global Multi-Brand Store Link Fixed Radar is live!")
 
 async def start_web_server():
     app = web.Application()
