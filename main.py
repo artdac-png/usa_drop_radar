@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import feedparser
+from urllib.parse import urlparse
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
@@ -137,8 +138,10 @@ def extract_best_link(summary: str, default_link: str) -> str:
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
+    """Безопасный извлекатель изображений: не ломает пути Slickdeals (США)."""
     url = None
     
+    # 1. Сначала забираем оригинальные картинки из тегов RSS
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
@@ -146,6 +149,7 @@ def extract_hd_image(entry, summary: str) -> str:
     elif hasattr(entry, 'enclosures') and entry.enclosures:
         url = entry.enclosures[0].get('href')
         
+    # 2. Если RSS-тегов нет, ищем в HTML-описании
     if not url and summary:
         img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
         if not img_matches:
@@ -163,11 +167,10 @@ def extract_hd_image(entry, summary: str) -> str:
     if url.startswith('//'):
         url = 'https:' + url
 
-    url = re.sub(r'threads/[^/]+/default/', 'threads/raw/default/', url)
-    url = re.sub(r'threads/[^/]+/', 'threads/raw/default/', url)
-    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
-    url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-    url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
+    # Безопасный апскейл: не трогаем валидные пути Slickdeals, чистим сжатие Pepper
+    if "pepper.com" in url or "static-pepper" in url or "hotukdeals" in url or "mydealz" in url:
+        url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
+        url = re.sub(r'threads/[^/]+/', 'threads/raw/default/', url)
 
     return url
 
@@ -238,7 +241,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Massimo Dutti Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [US/Slickdeals Photo Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
