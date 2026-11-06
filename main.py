@@ -90,81 +90,87 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(title: str, summary: str) -> str:
-    """Точный извлекатель промокодов (поддерживает 'apply code COZY', 'use code SAVE20' и т.д.)."""
-    text = f"{title} {summary}"
+    """Ищет промокод ТОЛЬКО в чистом тексте, исключая скрытые ссылки и HTML-атрибуты."""
+    # Удаляем все HTML-теги из summary, чтобы не парсить IDшники из ссылок
+    clean_summary = re.sub(r'<[^>]+>', ' ', summary)
+    text = f"{title} {clean_summary}"
     
-    # Ищем фразы вроде "code COZY", "apply code COZY", "coupon SAVE20", "code: COZY"
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
     stop_words = [
         "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
         "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
-        "orders", "order", "with", "only", "checkout", "at"
+        "orders", "order", "with", "only", "checkout", "at", "here", "now"
     ]
     
     for code in matches:
         code_clean = code.strip().upper()
         if code_clean.lower() not in stop_words and len(code_clean) >= 3:
+            # Требуем наличие цифры или строго заглавный промокод
             if any(char.isdigit() for char in code_clean) or code_clean.isupper():
                 return code_clean
                 
     return None
 
 def extract_store_buy_link(summary: str, forum_link: str) -> str:
-    """Гарантированно вытаскивает прямую ссылку перехода в магазин."""
+    """Гарантированно вытаскивает прямую ссылку на магазин, включая площадки HotUKDeals/Mydealz."""
     if not summary:
         return forum_link
     
-    # Ищем все ссылки в тегах href
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    # 1. Поиск ссылок прямой покупки/редиректа в магазин (Slickdeals / Pepper)
+    # 1. Поиск редиректов Slickdeals и сети Pepper (HotUKDeals, Mydealz, Chollometro)
     for url in urls:
-        if any(keyword in url.lower() for keyword in ["sdtid", "buyfromdeal", "visitthread", "out/", "checkout"]):
+        if any(keyword in url.lower() for keyword in ["sdtid", "buyfromdeal", "visit/thread", "visit/comment", "out/", "checkout"]):
             return url
             
-    # 2. Поиск внешних доменов (Nike, Adidas, Amazon, Champs и др.)
+    # 2. Поиск внешних доменов онлайн-магазинов (исключая сами форумы)
+    forum_domains = [
+        "slickdeals.net", "mydealz.de", "chollometro.com", 
+        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com"
+    ]
     for url in urls:
-        if not any(domain in url.lower() for domain in ["slickdeals.net/f/", "mydealz.de/deals/", "chollometro.com/ofertas/", "hotukdeals.com/deals/", "dealabs.com/bons-plans/", "pepper.pl/promocje/"]):
+        # Проверяем, что домена форума нет в ссылке
+        if not any(domain in url.lower() for domain in forum_domains):
             return url
             
     return forum_link
 
 def extract_hd_image(entry, summary: str) -> str:
-    """Улучшенный парсинг HD картинок с поддержкой всех RSS тегов."""
-    # 1. Проверяем media_content и media_thumbnail
+    """Парсинг изображений с принудительным улучшением качества (upscale)."""
+    url = None
+    
     if hasattr(entry, 'media_content') and entry.media_content:
-        return entry.media_content[0]['url']
-    if hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
-        return entry.media_thumbnail[0]['url']
-
-    if not summary:
-        return None
+        url = entry.media_content[0]['url']
+    elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+        url = entry.media_thumbnail[0]['url']
+    else:
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
+        if not img_matches:
+            img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary, re.IGNORECASE)
         
-    # 2. Поиск src в HTML тегах img
-    img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', summary, re.IGNORECASE)
-    if not img_matches:
-        img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', summary, re.IGNORECASE)
+        if img_matches:
+            url = img_matches[0]
+            # Отсекаем прозрачные пиксели-трекеры
+            if "beacon" in url or "tracking" in url or ".gif" in url:
+                if len(img_matches) > 1:
+                    url = img_matches[1]
+                else:
+                    return None
 
-    if not img_matches:
+    if not url:
         return None
 
-    url = img_matches[0]
-
-    # Игнорируем пиксели отслеживания и иконки
-    if "beacon" in url or "tracking" in url or ".gif" in url:
-        if len(img_matches) > 1:
-            url = img_matches[1]
-        else:
-            return None
-
-    # Повышаем качество картинок Slickdeals / Pepper
+    # --- Улучшение качества ---
+    # Для Slickdeals
     url = re.sub(r'threads/raw/default/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
-    url = re.sub(r'threads/thread_full_custom/\d+x\d+/\w+/\d+/', 'threads/raw/default/', url)
     url = re.sub(r'/\d+x\d+/', '/800x800/', url)
     url = re.sub(r'_thumb\.', '.', url)
     url = re.sub(r'_small\.', '.', url)
+    
+    # Для сети Pepper (HotUKDeals, Mydealz, Chollometro) - заменяем низкое качество на 1024x1024, 100%
+    url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/re/1024x1024/qt/100/', url)
 
     return url
 
@@ -236,7 +242,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Fixed Post] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [EU/UK Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -245,7 +251,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar is live!")
+    return web.Response(text="Global Multi-Brand Radar with Clean Promo & HD is live!")
 
 async def start_web_server():
     app = web.Application()
