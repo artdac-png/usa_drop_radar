@@ -68,9 +68,14 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning&rss=1"},
+    # --- Поиск по точечным скидкам и глобальным распродажам (США) ---
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+levis+levi&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
+    # Отдельный фид промокодов и банерных сейлов
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
+    
+    # --- Европа ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -113,6 +118,10 @@ def find_matched_brand(title: str) -> str:
     return None
 
 def extract_price(title: str, summary: str) -> str:
+    """Умеет извлекать как конкретные цены, так и распознавать банерные % скидки."""
+    text = f"{title} {summary}"
+    
+    # 1. Поиск фикс-цены ($29.99, £15, 20€)
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
     match_title = re.findall(price_pattern, title)
     if match_title:
@@ -122,8 +131,13 @@ def extract_price(title: str, summary: str) -> str:
         match_summary = re.findall(price_pattern, summary)
         if match_summary:
             return match_summary[0]
+
+    # 2. Поиск баннерных скидок (Extra 30% Off, Up to 65% Off)
+    pct_match = re.findall(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
+    if pct_match:
+        return f"🔥 СЕЙЛ ({pct_match[0].upper()})"
             
-    return "См. на сайте"
+    return "🔥 СЕЙЛ НА САЙТЕ"
 
 def extract_best_link(summary: str, default_link: str) -> str:
     if not summary:
@@ -249,7 +263,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Clean Format] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Promo & Deal Fixed] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
