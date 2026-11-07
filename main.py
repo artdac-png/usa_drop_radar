@@ -23,7 +23,9 @@ TARGET_BRANDS = [
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
-    "zappos", "jomashop", "6pm"
+    "zappos", "jomashop", "6pm", "woot",
+    "asics", "salomon", "solomon", "saucony", "soucone", "mizuno",
+    "on running", "onrunning", "on-running"
 ]
 
 CASHBACK_MAP = {
@@ -51,11 +53,21 @@ CASHBACK_MAP = {
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
-    "6pm": "TopCashback / Rakuten (до 4%)"
+    "6pm": "TopCashback / Rakuten (до 4%)",
+    "Woot": "TopCashback / Rakuten (до 4-6%)",
+    "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
+    "Solomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
+    "Saucony": "TopCashback / Rakuten (до 6-8%)",
+    "Soucone": "TopCashback / Rakuten (до 6-8%)",
+    "Mizuno": "TopCashback / Rakuten (до 5-7%)",
+    "On running": "TopCashback / Rakuten / iGraal (до 5-8%)",
+    "Onrunning": "TopCashback / Rakuten / iGraal (до 5-8%)",
+    "On-running": "TopCashback / Rakuten / iGraal (до 5-8%)"
 }
 
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+guess+converse+zara+mango+massimo&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+woot&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
@@ -78,6 +90,12 @@ def find_matched_brand(title: str) -> str:
                 return "H&M"
             if brand in ["massimo dutti", "massimo"]:
                 return "Massimo Dutti"
+            if brand in ["salomon", "solomon"]:
+                return "Salomon"
+            if brand in ["saucony", "soucone"]:
+                return "Saucony"
+            if brand in ["on running", "onrunning", "on-running"]:
+                return "On Running"
             return brand.capitalize()
     return None
 
@@ -95,15 +113,11 @@ def extract_price(title: str, summary: str) -> str:
     return "См. на сайте"
 
 def extract_promo_code(entry, title: str, summary: str) -> str:
-    """Точный парсинг: сначала из метатегов RSS (Pepper/HotUKDeals), затем из текста."""
-    
-    # 1. Сначала ищем выделенный код в атрибутах RSS (специфика HotUKDeals/Mydealz)
     if hasattr(entry, 'pepper_code') and entry.pepper_code:
         return entry.pepper_code.strip().upper()
     if hasattr(entry, 'couponcode') and entry.couponcode:
         return entry.couponcode.strip().upper()
 
-    # 2. Если в метатегах нет — ищем в тексте с жесткой фильтрацией слов-описаний
     text = f"{title} {summary}"
     text = re.sub(r'https?://\S+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
@@ -111,7 +125,6 @@ def extract_promo_code(entry, title: str, summary: str) -> str:
     pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
     matches = re.findall(pattern, text, re.IGNORECASE)
     
-    # Исключаем описательные слова одежды/обуви, чтобы не было ошибочных кодов вроде BREATHABLE
     stop_words = [
         "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
         "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
@@ -255,7 +268,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Pepper Code Fix] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [New Brands Added] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
