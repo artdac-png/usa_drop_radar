@@ -23,7 +23,7 @@ TARGET_BRANDS = [
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
-    "zappos", "jomashop", "6pm", "woot",
+    "zappos", "jomashop", "6pm",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno",
     "on running", "onrunning", "on-running"
 ]
@@ -54,7 +54,6 @@ CASHBACK_MAP = {
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)",
-    "Woot": "TopCashback / Rakuten (до 4-6%)",
     "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
     "Solomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
@@ -67,7 +66,7 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+woot&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
@@ -81,8 +80,20 @@ RSS_SOURCES = [
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
+# Исключаем электронику и технику
+TECH_STOP_WORDS = [
+    "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
+    "laptop", "tv", "television", "monitor", "phone", "smartphone", "audio", 
+    "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu"
+]
+
 def find_matched_brand(title: str) -> str:
     title_lower = title.lower()
+    
+    # Фильтруем технический мусор
+    if any(stop in title_lower for stop in TECH_STOP_WORDS):
+        return None
+
     for brand in TARGET_BRANDS:
         pattern = r'\b' + re.escape(brand) + r'\b'
         if re.search(pattern, title_lower):
@@ -268,7 +279,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [New Brands Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Fashion Filtered] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -277,7 +288,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Live!")
+    return web.Response(text="Global Multi-Brand Fashion Radar Live!")
 
 async def start_web_server():
     app = web.Application()
