@@ -24,7 +24,6 @@ TARGET_BRANDS = [
     "michael kors", "kors", "coach", "levi's", "levis",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "zappos", "jomashop", "6pm", "foot locker", "footlocker",
-    "jd sports", "jdsports", "jd",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno",
     "on running", "onrunning", "on-running"
 ]
@@ -57,9 +56,6 @@ CASHBACK_MAP = {
     "6pm": "TopCashback / Rakuten (до 4%)",
     "Foot locker": "TopCashback / Rakuten (до 4-6%)",
     "Footlocker": "TopCashback / Rakuten (до 4-6%)",
-    "Jd sports": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Jdsports": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Jd": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
     "Solomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
@@ -72,7 +68,7 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+footlocker+jdsports&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
@@ -113,8 +109,6 @@ def find_matched_brand(title: str) -> str:
                 return "On Running"
             if brand in ["foot locker", "footlocker"]:
                 return "Foot Locker"
-            if brand in ["jd sports", "jdsports", "jd"]:
-                return "JD Sports"
             return brand.capitalize()
     return None
 
@@ -130,34 +124,6 @@ def extract_price(title: str, summary: str) -> str:
             return match_summary[0]
             
     return "См. на сайте"
-
-def extract_promo_code(entry, title: str, summary: str) -> str:
-    if hasattr(entry, 'pepper_code') and entry.pepper_code:
-        return entry.pepper_code.strip().upper()
-    if hasattr(entry, 'couponcode') and entry.couponcode:
-        return entry.couponcode.strip().upper()
-
-    text = f"{title} {summary}"
-    text = re.sub(r'https?://\S+', ' ', text)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    
-    pattern = r'(?:apply\s+code|use\s+code|code|coupon|gutschein|código|промокод|promo|w/|with)\s*[:\-]?\s*([A-Za-z0-9_\-]{3,15})'
-    matches = re.findall(pattern, text, re.IGNORECASE)
-    
-    stop_words = [
-        "the", "for", "and", "mit", "con", "off", "free", "shipping", "sale", 
-        "this", "your", "from", "member", "new", "sign", "prime", "delivery", 
-        "orders", "order", "with", "only", "checkout", "at", "here", "now", "code", "promo",
-        "breathable", "leather", "cotton", "trainers", "sneakers", "shoes", "black", "white", "sizes"
-    ]
-    
-    for code in matches:
-        code_clean = code.strip().upper()
-        if code_clean.lower() not in stop_words and len(code_clean) >= 3:
-            if any(char.isdigit() for char in code_clean) or code_clean.isupper():
-                return code_clean
-                
-    return None
 
 def extract_best_link(summary: str, default_link: str) -> str:
     if not summary:
@@ -238,7 +204,6 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 price = extract_price(title, summary)
-                promo_code = extract_promo_code(entry, title, summary)
                 target_link = extract_best_link(summary, main_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
 
@@ -247,7 +212,6 @@ async def scan_and_post(bot: Bot):
                     continue
 
                 image_url = extract_hd_image(entry, summary)
-                promo_block = f"🎟 **Промокод:** `{promo_code}`\n" if promo_code else ""
 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
@@ -258,8 +222,6 @@ async def scan_and_post(bot: Bot):
                     f"{flag}\n\n"
                     f"📦 **{title}**\n"
                     f"🏷 **Цена:** `{price}`\n"
-                    f"{promo_block}"
-                    f"⚡️ _Проверяйте наличие нужного размера и дисконт!_\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`"
                 )
 
@@ -287,7 +249,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [JD Sports Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Clean Format] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -296,7 +258,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Fashion Radar Live!")
+    return web.Response(text="Global Multi-Brand Clean Radar Live!")
 
 async def start_web_server():
     app = web.Application()
