@@ -231,32 +231,46 @@ def extract_title_from_url(url: str) -> str:
             return part.replace("-", " ").title()
     return "Одежда / Обувь"
 
-def extract_levi_image(url: str) -> str:
-    art_match = re.search(r'/p/([A-Za-z0-9]+)', url)
-    if art_match:
-        sku = art_match.group(1)
+def extract_universal_sku_image(url: str) -> str:
+    """Универсальное определение артикула и получение HD картинки."""
+    sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
+    if sku_match:
+        sku = sku_match.group(1)
         return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp"
     return None
 
-# --- ВЫТАСКИВАЕМ ЦЕНУ ЧЕРЕЗ ПУБЛИЧНЫЙ SCRAPER API ---
-async def fetch_live_price(url: str) -> str:
-    proxy_api = f"https://api.allorigins.win/get?url={url}"
+# --- МОЩНЫЙ JINA PARSER ДЛЯ СКАНИРОВАНИЯ ЦЕНЫ И МЕТАДАННЫХ БЕЗ БЛОКИРОВОК ---
+async def fetch_product_data_via_jina(url: str):
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {"X-No-Cache": "true"}
+    
+    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
+    image_url = extract_universal_sku_image(url)
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(proxy_api, timeout=10) as resp:
+            async with session.get(jina_url, headers=headers, timeout=12) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    html_content = data.get("contents", "")
+                    text = await resp.text()
                     
-                    price_matches = re.findall(r'(\$\d+(?:\.\d{2})?)', html_content)
-                    if price_matches:
-                        valid_prices = [p for p in price_matches if p != "$0.00" and p != "$0"]
+                    # Ищем цену $XX.XX в отрендеренном маркдауне
+                    prices = re.findall(r'\$\d+(?:\.\d{2})?', text)
+                    if prices:
+                        valid_prices = [p for p in prices if p not in ["$0.00", "$0"]]
                         if valid_prices:
-                            return valid_prices[0]
+                            price = valid_prices[0]
+                            
+                    # Ищем ссылку на картинку, если артикул не сработал
+                    if not image_url:
+                        img_match = re.findall(r'\!\[.*?\]\((https?://[^\)]+)\)', text)
+                        for img in img_match:
+                            if any(ext in img.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']) and not any(stop in img.lower() for stop in ['logo', 'icon', 'banner', 'avatar']):
+                                image_url = img
+                                break
     except Exception as e:
-        print(f"⚠️ Ошибка прокси-парсинга цены: {e}")
+        print(f"⚠️ Ошибка Jina Parser: {e}")
 
-    return "🔥 СМОТРЕТЬ НА САЙТЕ"
+    return price, image_url
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -293,13 +307,13 @@ async def process_track_url(message: types.Message, state: FSMContext):
         return
 
     user_id = message.from_user.id
-    
+    await message.answer("⏳ Сканирую карточку товара...")
+
     parsed_title = extract_title_from_url(url)
     title = clean_markdown_text(parsed_title)
     brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
     
-    price = await fetch_live_price(url)
-    image_url = extract_levi_image(url) if "levi.com" in url else None
+    price, image_url = await fetch_product_data_via_jina(url)
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
@@ -393,7 +407,7 @@ async def check_personal_tracker():
             res = supabase.table("tracked_items").select("*").execute()
             if res.data:
                 for item in res.data:
-                    new_price = await fetch_live_price(item["url"])
+                    new_price, _ = await fetch_product_data_via_jina(item["url"])
                     if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
                         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
@@ -523,7 +537,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Proxy Price Live!")
+    return web.Response(text="Global & Personal Jina Reader Live!")
 
 async def start_web_server():
     app = web.Application()
