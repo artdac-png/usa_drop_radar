@@ -233,25 +233,33 @@ def extract_title_from_url(url: str) -> str:
     return "Одежда / Обувь"
 
 def extract_universal_sku_image(url: str) -> str:
+    """Генератор фото высокой точности с подгоном параметров Scene7"""
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
     if sku_match:
         sku = sku_match.group(1)
-        return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp"
+        return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp?wid=800&hei=800&fmt=jpeg&qlt=85"
     return None
 
-async def fetch_live_price(url: str) -> str:
+async def fetch_product_data(url: str):
+    """Вытягивание цены и картинки из Google Apps Script"""
+    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
+    image_url = extract_universal_sku_image(url) if "levi.com" in url else None
+
     if GAS_PROXY_URL and "script.google.com" in GAS_PROXY_URL:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(GAS_PROXY_URL, params={"url": url}, timeout=15) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data.get("status") == "success" and data.get("price") != "NOT_FOUND":
-                            return data.get("price")
+                        if data.get("status") == "success":
+                            if data.get("price") != "NOT_FOUND":
+                                price = data.get("price")
+                            if data.get("image"):
+                                image_url = data.get("image")
         except Exception as e:
             print(f"⚠️ Ошибка запроса к Google Apps Script: {e}")
 
-    return "🔥 СМОТРЕТЬ НА САЙТЕ"
+    return price, image_url
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -294,8 +302,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
     title = clean_markdown_text(parsed_title)
     brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
     
-    price = await fetch_live_price(url)
-    image_url = extract_universal_sku_image(url) if "levi.com" in url else None
+    price, image_url = await fetch_product_data(url)
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
@@ -320,6 +327,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🛒 Открыть товар на сайте", url=url)]
     ])
 
+    sent_photo = False
     if image_url:
         try:
             await message.answer_photo(
@@ -328,9 +336,11 @@ async def process_track_url(message: types.Message, state: FSMContext):
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
-        except Exception:
-            await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
-    else:
+            sent_photo = True
+        except Exception as e:
+            print(f"⚠️ Не удалось отправить photo прямо: {e}")
+
+    if not sent_photo:
         await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
 
 @dp.message(F.text == "📋 Мой список")
@@ -363,6 +373,7 @@ async def show_tracked_list(message: types.Message):
         )
 
         image_url = item.get("image_url")
+        sent_photo = False
         if image_url:
             try:
                 await message.answer_photo(
@@ -371,9 +382,11 @@ async def show_tracked_list(message: types.Message):
                     parse_mode="Markdown",
                     reply_markup=inline_kb
                 )
+                sent_photo = True
             except Exception:
-                await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
-        else:
+                pass
+                
+        if not sent_photo:
             await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("del_"))
@@ -389,7 +402,7 @@ async def check_personal_tracker():
             res = supabase.table("tracked_items").select("*").execute()
             if res.data:
                 for item in res.data:
-                    new_price = await fetch_live_price(item["url"])
+                    new_price, _ = await fetch_product_data(item["url"])
                     if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
                         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
