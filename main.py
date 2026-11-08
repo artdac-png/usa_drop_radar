@@ -21,9 +21,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
-    "michael kors", "kors", "coach", "levi's", "levis",
+    "michael kors", "kors", "coach", "levi's", "levis", "levi",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "zappos", "jomashop", "6pm", "foot locker", "footlocker",
+    "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno",
     "on running", "onrunning", "on-running"
 ]
@@ -34,6 +35,9 @@ CASHBACK_MAP = {
     "Adidas": "TopCashback / Beruby (до 6-8%)",
     "Puma": "TopCashback / iGraal (до 10%)",
     "New balance": "TopCashback / Rakuten (до 5%)",
+    "Joes new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
+    "Joesnewbalanceoutlet": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
+    "Joe's new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
     "Converse": "TopCashback / Rakuten (до 6-8%)",
     "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Tommy hilfiger": "TopCashback / Rakuten (до 7%)",
@@ -46,6 +50,7 @@ CASHBACK_MAP = {
     "Coach": "TopCashback / Rakuten (до 6%)",
     "Levi's": "TopCashback / iGraal (до 8%)",
     "Levis": "TopCashback / iGraal (до 8%)",
+    "Levi": "TopCashback / iGraal (до 8%)",
     "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
     "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
     "Massimo dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
@@ -68,14 +73,14 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    # --- Поиск по точечным скидкам и глобальным распродажам (США) ---
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+levis+levi&rss=1"},
+    # --- США: Форумные скидки + Официальные купоны и баннеры брендов ---
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+levis+joesnewbalance&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
-    # Отдельный фид промокодов и банерных сейлов
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     
-    # --- Европа ---
+    # --- Европа: Форумные скидки + Аутлет-баннеры ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -114,14 +119,22 @@ def find_matched_brand(title: str) -> str:
                 return "On Running"
             if brand in ["foot locker", "footlocker"]:
                 return "Foot Locker"
+            if brand in ["joes new balance", "joesnewbalanceoutlet", "joe's new balance"]:
+                return "New Balance"
+            if brand in ["levi's", "levis", "levi"]:
+                return "Levi's"
             return brand.capitalize()
     return None
 
 def extract_price(title: str, summary: str) -> str:
-    """Умеет извлекать как конкретные цены, так и распознавать банерные % скидки."""
     text = f"{title} {summary}"
     
-    # 1. Поиск фикс-цены ($29.99, £15, 20€)
+    # 1. Поиск составных акций ("Buy 2 for $80", "2 for $80", "2 por 80€")
+    bundle_match = re.findall(r'(\b(?:buy\s*)?\d+\s*(?:for|por)\s*[\$\b\d\.\,€£\s]+(?:\$\d+|\d+€|\d+£)?)', text, re.IGNORECASE)
+    if bundle_match:
+        return bundle_match[0].strip()
+
+    # 2. Поиск классической одиночной цены ($29.99, £15, 20€)
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
     match_title = re.findall(price_pattern, title)
     if match_title:
@@ -132,7 +145,7 @@ def extract_price(title: str, summary: str) -> str:
         if match_summary:
             return match_summary[0]
 
-    # 2. Поиск баннерных скидок (Extra 30% Off, Up to 65% Off)
+    # 3. Поиск баннерных скидок (Extra 30% Off, Up to 65% Off)
     pct_match = re.findall(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
     if pct_match:
         return f"🔥 СЕЙЛ ({pct_match[0].upper()})"
@@ -145,14 +158,14 @@ def extract_best_link(summary: str, default_link: str) -> str:
         
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
     
-    redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout"]
+    redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout", "couponcabin", "bradsdeals"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws):
             return url
             
     forum_domains = [
         "slickdeals.net", "mydealz.de", "chollometro.com", 
-        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com"
+        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com", "couponcabin.com"
     ]
     for url in urls:
         if not any(domain in url.lower() for domain in forum_domains):
@@ -263,7 +276,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Promo & Deal Fixed] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Direct Brand Coupon Live] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -272,7 +285,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Clean Radar Live!")
+    return web.Response(text="Global Multi-Brand Direct Coupon Radar Live!")
 
 async def start_web_server():
     app = web.Application()
