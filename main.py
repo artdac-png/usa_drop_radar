@@ -201,4 +201,227 @@ def extract_hd_image(entry, summary: str) -> str:
 
     if "slickdeals.net" in url:
         url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-        url = re.sub(r'_(?:thumb|small|medium)\
+        url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
+    elif any(domain in url for domain in ["pepper.com", "static-pepper", "hotukdeals", "mydealz", "chollometro", "dealabs"]):
+        url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
+
+    return url
+
+# --- ИЗОЛИРОВАННЫЙ МОДУЛЬ ЛИЧНОГО ТРЕКИНГА ССЫЛОК ---
+async def fetch_page_price(url: str) -> str:
+    """Безопасно запрашивает страницу товара и пытается найти цену."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
+                    matches = re.findall(price_pattern, html)
+                    if matches:
+                        return matches[0]
+    except Exception as e:
+        print(f"⚠️ Ошибка отслеживания ссылки {url}: {e}")
+    return "См. на сайте"
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Привет! Я твой персональный радар скидок.\n\n"
+        "📍 **Как отслеживать конкретные товары:**\n"
+        "Отправь мне команду `/track ССЫЛКА` и я начну следить за ценой!\n\n"
+        "📋 Команды:\n"
+        "`/track https://...` — добавить товар\n"
+        "`/list` — мои товары на отслеживании\n"
+        "`/untrack ID` — удалить товар"
+    )
+
+@dp.message(Command("track"))
+async def cmd_track(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ Укажи ссылку на товар: `/track https://...`", parse_mode="Markdown")
+        return
+
+    url = args[1].strip()
+    user_id = message.from_user.id
+
+    price = await fetch_page_price(url)
+    brand = find_matched_brand(url) or "Персональный трекинг"
+    title = f"Товар {urlparse(url).netloc}"
+
+    supabase.table("tracked_items").insert({
+        "user_id": user_id,
+        "url": url,
+        "brand": brand,
+        "title": title,
+        "last_price": price
+    }).execute()
+
+    await message.answer(
+        f"✅ **Товар добавлен на отслеживание!**\n\n"
+        f"🔗 [Перейти к товару]({url})\n"
+        f"🏷 **Текущая цена:** `{price}`\n\n"
+        f"_Я напишу тебе в ЛС, как только цена изменится!_",
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
+
+@dp.message(Command("list"))
+async def cmd_list(message: types.Message):
+    user_id = message.from_user.id
+    res = supabase.table("tracked_items").select("*").eq("user_id", user_id).execute()
+    
+    if not res.data:
+        await message.answer("📭 У тебя пока нет товаров на отслеживании.")
+        return
+
+    text = "📋 **Твои отслеживаемые товары:**\n\n"
+    for item in res.data:
+        text += f"🔹 **ID:** `{item['id']}` | [{item['brand']}]({item['url']})\n   🏷 Цена: `{item['last_price']}`\n\n"
+
+    text += "Удалить: `/untrack ID`"
+    await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+@dp.message(Command("untrack"))
+async def cmd_untrack(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ Укажи ID товара: `/untrack ID`")
+        return
+    item_id = args[1].strip()
+    supabase.table("tracked_items").delete().eq("id", item_id).execute()
+    await message.answer(f"🗑 Товар #{item_id} удален из отслеживания.")
+
+async def check_personal_tracker():
+    """Фоновая задача: раз в 2 часа проверяет твои персональные ссылки."""
+    while True:
+        try:
+            res = supabase.table("tracked_items").select("*").execute()
+            if res.data:
+                for item in res.data:
+                    new_price = await fetch_page_price(item["url"])
+                    if new_price != "См. на сайте" and new_price != item["last_price"]:
+                        await bot.send_message(
+                            chat_id=item["user_id"],
+                            text=(
+                                f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n"
+                                f"📦 [{item['brand']}]({item['url']})\n"
+                                f"🏷 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
+                            ),
+                            parse_mode="Markdown"
+                        )
+                        supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
+        except Exception as e:
+            print(f"⚠️ Ошибка фонового трекера: {e}")
+            
+        await asyncio.sleep(7200) # Проверка 1 раз в 2 часа
+
+# --- ГЛОБАЛЬНЫЙ СКАНИРОВАТЕЛЬ КАНАЛА (РАБОТАЕТ КАК И РАНЬШЕ) ---
+async def scan_and_post():
+    for source in RSS_SOURCES:
+        flag = source["flag"]
+        rss_url = source["url"]
+        try:
+            feed = feedparser.parse(rss_url)
+            
+            for entry in feed.entries:
+                title = entry.title.strip()
+                main_link = entry.link
+                deal_id = getattr(entry, 'id', main_link)
+                summary = getattr(entry, 'summary', '')
+                
+                brand = find_matched_brand(title)
+                if not brand:
+                    continue
+
+                res_id = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
+                if res_id.data:
+                    continue
+
+                res_title = supabase.table("posted_deals").select("id").eq("title", title).execute()
+                if res_title.data:
+                    continue
+
+                price = extract_price(title, summary)
+                target_link = extract_best_link(summary, main_link)
+                cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
+                image_url = extract_hd_image(entry, summary)
+
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
+                ])
+
+                post_text = (
+                    f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
+                    f"{flag}\n\n"
+                    f"📦 **{title}**\n"
+                    f"🏷 **Цена:** `{price}`\n"
+                    f"💳 **Кэшбэк:** `{cashback_info}`"
+                )
+
+                try:
+                    if image_url:
+                        await bot.send_photo(
+                            chat_id=CHANNEL_ID,
+                            photo=image_url,
+                            caption=post_text,
+                            parse_mode="Markdown",
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await bot.send_message(
+                            chat_id=CHANNEL_ID,
+                            text=post_text,
+                            parse_mode="Markdown",
+                            disable_web_page_preview=False,
+                            reply_markup=keyboard
+                        )
+
+                    supabase.table("posted_deals").insert({
+                        "deal_id": deal_id,
+                        "title": title,
+                        "brand": brand
+                    }).execute()
+
+                    print(f"🔥 [Channel Radar] {flag} {brand} ({price}): {title[:30]}...")
+                    await asyncio.sleep(3)
+
+                except Exception as e:
+                    print(f"❌ Ошибка отправки поста: {e}")
+        except Exception as e:
+            print(f"⚠️ Ошибка ленты {rss_url}: {e}")
+
+async def run_radar_loop():
+    while True:
+        try:
+            await scan_and_post()
+        except Exception as e:
+            print(f"⚠️ Ошибка радара: {e}")
+        await asyncio.sleep(180)
+
+async def handle_ping(request):
+    return web.Response(text="Global & Personal Radar Live!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
+    await start_web_server()
+    print("🚀 Глобальный радар и личный трекер запущены!")
+    
+    # Запуск всех фоновых задач без блокировки
+    asyncio.create_task(run_radar_loop())
+    asyncio.create_task(check_personal_tracker())
+    
+    # Запуск обработки личных команд в Telegram
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
