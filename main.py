@@ -69,6 +69,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
 ]
 
+# === ОБНОВЛЕННЫЙ СПИСОК СТОП-СЛОВ (ДОБАВЛЕНЫ ДЕТСКИЕ РАЗМЕРЫ) ===
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -76,7 +77,10 @@ EXCLUDE_STOP_WORDS = [
     "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu",
     "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette",
     "giftset", "gift set", "body wash", "shower gel", "deodorant", "shampoo", "lotion", "cream", "soap", "skincare", "beauty",
-    "kids", "toddler", "infant", "youth", "baby", "child", "children"
+    # Детские товары:
+    "kids", "toddler", "infant", "youth", "baby", "child", "children", 
+    "boy", "boys", "boy's", "girl", "girls", "girl's",
+    " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school"
 ]
 
 RSS_SOURCES = [
@@ -105,6 +109,7 @@ def clean_markdown_text(text: str) -> str:
 def find_matched_brand(text: str):
     if not text: return None
     text_lower = text.lower()
+    # Проверка стоп-слов сработает до того, как бот определит бренд
     if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS): return None
     for brand in TARGET_BRANDS:
         pattern = r'\b' + re.escape(brand) + r'\b'
@@ -123,19 +128,16 @@ def find_matched_brand(text: str):
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
     return None
 
-# === ФУНКЦИЯ ПОИСКА ПРОМОКОДОВ ===
 def extract_promo_code(text: str):
     if not text: return None
     text = re.sub(r'<[^>]+>', ' ', text)
     text = html.unescape(text).upper()
-    
     patterns = [
         r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15})',
         r'USE\s*(?:PROMO\s*)?CODE[:\s]+([A-Z0-9]{4,15})',
         r'CODE[:\s]+([A-Z0-9]{4,15})',
         r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
@@ -247,9 +249,8 @@ async def fetch_product_data(url: str):
             parsed_title = None; image_url = None
     return price, image_url, parsed_title, parsed_brand
 
-# === УМНЫЙ ПОИСК СКИДОК (JSON-LD) ===
 async def fetch_site_search(site, query):
-    safe_query = f"{query} -kids -toddler -infant -youth -baby"
+    safe_query = f"{query} -kids -toddler -infant -youth -baby -boys -girls"
     encoded_query = quote(safe_query)
     url = site["url"].format(encoded_query)
     display_url = site["url"].format(quote(query))
@@ -441,7 +442,6 @@ async def check_personal_tracker():
         except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
 
-# === ОБНОВЛЕННАЯ ФУНКЦИЯ РАДАРА (БЕЗ КЭШБЭКА) ===
 async def scan_and_post():
     for source in RSS_SOURCES:
         flag = source["flag"]
@@ -454,6 +454,7 @@ async def scan_and_post():
                 deal_id = getattr(entry, 'id', main_link)
                 summary = getattr(entry, 'summary', '')
                 
+                # Бот пропустит пост, если найдет стоп-слово (например, Boy's или Gs)
                 brand = find_matched_brand(title)
                 if not brand: continue
                     
@@ -464,10 +465,8 @@ async def scan_and_post():
                 target_link = extract_best_link(summary, main_link)
                 image_url = extract_hd_image(entry, summary)
                 
-                # ПРОВЕРКА ПРОМОКОДА ИЗ ТЕКСТА RSS
                 promo_code = extract_promo_code(f"{title} {summary}")
                 
-                # ГЛУБОКАЯ ПРОВЕРКА ТОВАРА
                 try:
                     async with AsyncSession() as s:
                         resp = await s.get(target_link, impersonate="chrome", timeout=10)
@@ -489,7 +488,6 @@ async def scan_and_post():
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
                 clean_deal_title = clean_markdown_text(title)
                 
-                # СБОРКА ПОСТА (Кэшбэк удален)
                 post_text = (
                     f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
                     f"{flag}\n\n"
@@ -497,7 +495,6 @@ async def scan_and_post():
                     f"💳 **Цена:** {price}"
                 )
                 
-                # Добавляем промокод, только если он найден
                 if promo_code:
                     post_text += f"\n🎟 **Промокод:** `{promo_code}`"
                 
