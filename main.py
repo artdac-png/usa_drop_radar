@@ -113,14 +113,14 @@ def clean_markdown_text(text: str) -> str:
         return ""
     return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "")
 
-def find_matched_brand(title: str) -> str:
-    title_lower = title.lower()
-    if any(stop in title_lower for stop in EXCLUDE_STOP_WORDS):
+def find_matched_brand(text: str) -> str:
+    text_lower = text.lower()
+    if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS):
         return None
 
     for brand in TARGET_BRANDS:
         pattern = r'\b' + re.escape(brand) + r'\b'
-        if re.search(pattern, title_lower):
+        if re.search(pattern, text_lower):
             if brand in ["h&m", "h m", "hm"]:
                 return "H&M"
             if brand in ["massimo dutti", "massimo"]:
@@ -140,6 +140,10 @@ def find_matched_brand(title: str) -> str:
             if brand in ["calvin klein", "calvin"]:
                 return "Calvin Klein"
             return brand.capitalize()
+            
+    if "levi.com" in text_lower or "levi" in text_lower:
+        return "Levi's"
+        
     return None
 
 def extract_price(title: str, summary: str) -> str:
@@ -220,13 +224,20 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
-# ---УМНЫЙ ПАРСИНГ: ИЗВЛЕКАЕТ НАЗВАНИЕ ИЗ ССЫЛКИ И ПРЕВЬЮ ТЕЛЕГРАМА---
 def extract_title_from_url(url: str) -> str:
     path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "outerwear", "pants", "shoes", "p"]]
     for part in reversed(path_parts):
         if len(part) > 3 and not part.isdigit() and not part.startswith("A"):
             return part.replace("-", " ").title()
     return "Одежда / Обувь"
+
+def extract_levi_image(url: str) -> str:
+    """Генерирует прямую ссылку на фото товара Levi's по его артикулу."""
+    art_match = re.search(r'/p/([A-Za-z0-9]+)', url)
+    if art_match:
+        sku = art_match.group(1)
+        return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp"
+    return None
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -264,19 +275,13 @@ async def process_track_url(message: types.Message, state: FSMContext):
 
     user_id = message.from_user.id
     
-    # 1. Считываем данные прямо из превью Telegram, если они есть
-    title = None
-    image_url = None
-    
-    if message.link_preview_options and hasattr(message, 'external_reply'):
-        pass # Безопасная заглушка
-
-    # Извлекаем красивое имя из самого URL ссылки (например: piedmont short puffer jacket)
     parsed_title = extract_title_from_url(url)
     title = clean_markdown_text(parsed_title)
-
     brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
     price = "🔥 СМОТРЕТЬ НА САЙТЕ"
+    
+    # Автоматическая генерация фото для Levi's
+    image_url = extract_levi_image(url) if "levi.com" in url else None
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
@@ -291,8 +296,9 @@ async def process_track_url(message: types.Message, state: FSMContext):
     
     caption_text = (
         f"✅ **Товар сохранен!**\n\n"
+        f"🏷 **Бренд:** {brand}\n"
         f"📦 **Модель:** {title}\n"
-        f"🏷 **Текущая цена:** `{price}`\n\n"
+        f"💳 **Текущая цена:** `{price}`\n\n"
         f"Я напишу тебе в ЛС, как только цена изменится!"
     )
     
@@ -300,7 +306,18 @@ async def process_track_url(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🛒 Открыть товар на сайте", url=url)]
     ])
 
-    await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
+    if image_url:
+        try:
+            await message.answer_photo(
+                photo=image_url,
+                caption=caption_text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        except Exception:
+            await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
+    else:
+        await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
 
 @dp.message(F.text == "📋 Мой список")
 @dp.message(Command("list"))
@@ -322,13 +339,28 @@ async def show_tracked_list(message: types.Message):
             ]
         ])
         
-        display_name = clean_markdown_text(item.get('title') or item['brand'])
+        brand_name = clean_markdown_text(item.get('brand') or "Levi's")
+        model_name = clean_markdown_text(item.get('title') or "Одежда")
+        
         caption_text = (
-            f"📦 **{display_name}**\n"
-            f"🏷 Цена: `{item['last_price']}`"
+            f"🏷 **Бренд:** {brand_name}\n"
+            f"📦 **Модель:** {model_name}\n"
+            f"💳 Цена: `{item['last_price']}`"
         )
 
-        await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
+        image_url = item.get("image_url")
+        if image_url:
+            try:
+                await message.answer_photo(
+                    photo=image_url,
+                    caption=caption_text,
+                    parse_mode="Markdown",
+                    reply_markup=inline_kb
+                )
+            except Exception:
+                await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
+        else:
+            await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_tracked_item(callback: types.CallbackQuery):
@@ -425,7 +457,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Radar Live!")
+    return web.Response(text="Global & Personal Brand/Image Fixed Live!")
 
 async def start_web_server():
     app = web.Application()
