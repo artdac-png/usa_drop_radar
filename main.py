@@ -28,7 +28,8 @@ TARGET_BRANDS = [
     "nordstrom rack", "rack", "finish line", "finishline", 
     "champs sports", "champs", "dicks sporting goods", "dicks",
     "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
-    "brandalley", "brand alley",
+    "brandalley", "brand alley", "sports direct", "sportsdirect",
+    "solebox", "end clothing", "end.", "endclothing", "decathlon",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
     "on running", "onrunning", "on-running"
 ]
@@ -44,6 +45,13 @@ CASHBACK_MAP = {
     "Joe's new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
     "Brandalley": "TopCashback UK / Quidco (до 6-9%)",
     "Brand alley": "TopCashback UK / Quidco (до 6-9%)",
+    "Sports direct": "TopCashback UK / Quidco (до 4-7%)",
+    "Sportsdirect": "TopCashback UK / Quidco (до 4-7%)",
+    "Solebox": "TopCashback DE / iGraal (до 5-8%)",
+    "End clothing": "TopCashback UK / Quidco (до 6-8%)",
+    "End.": "TopCashback UK / Quidco (до 6-8%)",
+    "Endclothing": "TopCashback UK / Quidco (до 6-8%)",
+    "Decathlon": "TopCashback / iGraal / Beruby (до 4-6%)",
     "Converse": "TopCashback / Rakuten (до 6-8%)",
     "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Tommy hilfiger": "TopCashback / Rakuten (до 7%)",
@@ -65,8 +73,8 @@ CASHBACK_MAP = {
     "Jomashop": "TopCashback / Rakuten (до 4%)",
     "Zappos": "TopCashback / Rakuten (до 5%)",
     "6pm": "TopCashback / Rakuten (до 4%)",
-    "Foot locker": "TopCashback / Rakuten (до 4-6%)",
-    "Footlocker": "TopCashback / Rakuten (до 4-6%)",
+    "Foot locker": "TopCashback / Rakuten / iGraal (до 4-6%)",
+    "Footlocker": "TopCashback / Rakuten / iGraal (до 4-6%)",
     "Jd sports": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Jdsports": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Jd": "TopCashback / Rakuten / iGraal (до 6-8%)",
@@ -98,7 +106,7 @@ RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     
-    # --- Европа ---
+    # --- Европа (включая Sports Direct, Solebox, END. Clothing, Decathlon, JD/Foot Locker EU) ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -153,6 +161,14 @@ def find_matched_brand(title: str) -> str:
                 return "Levi's"
             if brand in ["brandalley", "brand alley"]:
                 return "BrandAlley"
+            if brand in ["sports direct", "sportsdirect"]:
+                return "Sports Direct"
+            if brand in ["end clothing", "end.", "endclothing"]:
+                return "END. Clothing"
+            if brand in ["solebox"]:
+                return "Solebox"
+            if brand in ["decathlon"]:
+                return "Decathlon"
             return brand.capitalize()
     return None
 
@@ -306,7 +322,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [US Stores Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [EU Expansion Live] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
