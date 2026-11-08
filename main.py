@@ -4,7 +4,7 @@ import re
 import html
 import feedparser
 import aiohttp
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -22,7 +22,6 @@ from curl_cffi.requests import AsyncSession
 
 load_dotenv()
 
-# === 1. ЗАЩИТА И ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -30,17 +29,35 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
-    raise RuntimeError("❌ Ошибка: Не заданы BOT_TOKEN, SUPABASE_URL или SUPABASE_KEY в переменных окружения!")
+    raise RuntimeError("❌ Ошибка: Не заданы BOT_TOKEN, SUPABASE_URL или SUPABASE_KEY!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Глобальная сессия для запросов
 http_session: aiohttp.ClientSession = None
 
 class TrackState(StatesGroup):
     waiting_for_url = State()
+
+class SearchState(StatesGroup):
+    waiting_for_query = State()
+
+# === 2. НОВЫЙ СПИСОК МАГАЗИНОВ И ПЛОЩАДОК ===
+SEARCH_SITES = [
+    {"name": "Nike", "url": "https://www.nike.com/w?q={}", "domain": "nike.com"},
+    {"name": "Adidas", "url": "https://www.adidas.com/us/search?q={}", "domain": "adidas.com"},
+    {"name": "Footlocker US", "url": "https://www.footlocker.com/search?q={}", "domain": "footlocker.com"},
+    {"name": "Footlocker EU/UK", "url": "https://www.footlocker.co.uk/en/search?q={}", "domain": "footlocker.co.uk"},
+    {"name": "JD Sports US", "url": "https://www.jdsports.com/search?q={}", "domain": "jdsports.com"},
+    {"name": "JD Sports UK", "url": "https://www.jdsports.co.uk/search/{}", "domain": "jdsports.co.uk"},
+    {"name": "Champs Sports", "url": "https://www.champssports.com/search?q={}", "domain": "champssports.com"},
+    {"name": "Zappos", "url": "https://www.zappos.com/search?term={}", "domain": "zappos.com"},
+    {"name": "Shop Simon", "url": "https://www.shopsimon.com/search?q={}", "domain": "shopsimon.com"},
+    {"name": "ASOS US", "url": "https://www.asos.com/us/search/?q={}", "domain": "asos.com"},
+    {"name": "Calvin Klein", "url": "https://www.calvinklein.us/en/search?q={}", "domain": "calvinklein.us"},
+    {"name": "Levi's", "url": "https://www.levi.com/US/en_US/search?q={}", "domain": "levi.com"}
+]
 
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
@@ -62,30 +79,18 @@ EXCLUDE_STOP_WORDS = [
 ]
 
 CASHBACK_MAP = {
-    "Jordan": "TopCashback / Rakuten / Beruby (до 8-10%)",
-    "Nike": "TopCashback / Beruby / Rakuten (до 8-10%)",
-    "Adidas": "TopCashback / Beruby (до 6-8%)",
-    "Puma": "TopCashback / iGraal (до 10%)",
-    "New Balance": "TopCashback / Rakuten (до 5%)",
-    "The North Face": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Converse": "TopCashback / Rakuten (до 6-8%)",
-    "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Tommy Hilfiger": "TopCashback / Rakuten (до 7%)",
-    "Calvin Klein": "TopCashback / Rakuten (до 7%)",
-    "Guess": "TopCashback / iGraal (до 6%)",
-    "Michael Kors": "TopCashback / Rakuten (до 6%)",
-    "Coach": "TopCashback / Rakuten (до 6%)",
-    "Levi's": "TopCashback / iGraal (до 8%)",
-    "Hugo Boss": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
-    "Mango": "TopCashback / iGraal / Beruby (до 6-8%)",
-    "Massimo Dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
-    "H&M": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
-    "Saucony": "TopCashback / Rakuten (до 6-8%)",
-    "Mizuno": "TopCashback / Rakuten (до 5-7%)",
-    "Hoka": "TopCashback / Rakuten / iGraal (до 5-8%)",
+    "Jordan": "TopCashback / Rakuten / Beruby (до 8-10%)", "Nike": "TopCashback / Beruby / Rakuten (до 8-10%)",
+    "Adidas": "TopCashback / Beruby (до 6-8%)", "Puma": "TopCashback / iGraal (до 10%)",
+    "New Balance": "TopCashback / Rakuten (до 5%)", "The North Face": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Converse": "TopCashback / Rakuten (до 6-8%)", "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Tommy Hilfiger": "TopCashback / Rakuten (до 7%)", "Calvin Klein": "TopCashback / Rakuten (до 7%)",
+    "Guess": "TopCashback / iGraal (до 6%)", "Michael Kors": "TopCashback / Rakuten (до 6%)",
+    "Coach": "TopCashback / Rakuten (до 6%)", "Levi's": "TopCashback / iGraal (до 8%)",
+    "Hugo Boss": "TopCashback / Rakuten / iGraal (до 6-8%)", "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
+    "Mango": "TopCashback / iGraal / Beruby (до 6-8%)", "Massimo Dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
+    "H&M": "TopCashback / Rakuten / iGraal (до 4-6%)", "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)", "Saucony": "TopCashback / Rakuten (до 6-8%)",
+    "Mizuno": "TopCashback / Rakuten (до 5-7%)", "Hoka": "TopCashback / Rakuten / iGraal (до 5-8%)",
     "On Running": "TopCashback / Rakuten / iGraal (до 5-8%)"
 }
 
@@ -107,27 +112,15 @@ RSS_SOURCES = [
 ]
 
 def clean_markdown_text(text: str) -> str:
-    if not text:
-        return ""
-    
-    # 1. Превращаем HTML-коды (&#x27;, &amp; и т.д.) в обычные символы
+    if not text: return ""
     text = html.unescape(text)
-    
-    # 2. Убираем значки торговых марок
     text = re.sub(r'&reg;|®|&trade;|™', '', text, flags=re.IGNORECASE)
-    
-    # 3. Чистим символы, которые ломают разметку Telegram
-    cleaned = text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "").strip()
-    
-    return cleaned
+    return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "").strip()
 
 def find_matched_brand(text: str):
-    if not text:
-        return None
+    if not text: return None
     text_lower = text.lower()
-    if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS):
-        return None
-
+    if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS): return None
     for brand in TARGET_BRANDS:
         pattern = r'\b' + re.escape(brand) + r'\b'
         if re.search(pattern, text_lower):
@@ -141,7 +134,6 @@ def find_matched_brand(text: str):
             if brand in ["boss", "hugo boss"]: return "Hugo Boss"
             if brand in ["calvin klein", "calvin"]: return "Calvin Klein"
             return brand.title()
-            
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
     return None
@@ -175,29 +167,23 @@ def extract_best_link(summary: str, default_link: str) -> str:
 
 def extract_hd_image(entry, summary: str) -> str:
     url = None
-    if hasattr(entry, 'media_content') and entry.media_content:
-        url = entry.media_content[0]['url']
-    elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
-        url = entry.media_thumbnail[0]['url']
-    elif hasattr(entry, 'enclosures') and entry.enclosures:
-        url = entry.enclosures[0].get('href')
+    if hasattr(entry, 'media_content') and entry.media_content: url = entry.media_content[0]['url']
+    elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail: url = entry.media_thumbnail[0]['url']
+    elif hasattr(entry, 'enclosures') and entry.enclosures: url = entry.enclosures[0].get('href')
     raw_html = ""
-    if hasattr(entry, 'content') and entry.content:
-        raw_html += entry.content[0].value
+    if hasattr(entry, 'content') and entry.content: raw_html += entry.content[0].value
     if summary: raw_html += " " + summary
     if not url and raw_html:
         img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if img_matches:
             for img_url in img_matches:
                 if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1", "avatar"]):
-                    url = img_url
-                    break
+                    url = img_url; break
     if not url: return None
     if url.startswith('//'): url = 'https:' + url
     elif url.startswith('/'): url = 'https://slickdeals.net' + url
     if "slickdeals.net" in url:
-        url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-        url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
+        url = re.sub(r'/\d+x\d+/', '/800x800/', url); url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
     elif any(domain in url for domain in ["pepper.com", "static-pepper", "hotukdeals", "mydealz", "chollometro", "dealabs"]):
         url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
     return url
@@ -215,8 +201,7 @@ def extract_title_from_url(url: str) -> str:
 
 def extract_levis_image(url: str) -> str:
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
-    if sku_match:
-        return f"https://lsco.scene7.com/is/image/lsco/{sku_match.group(1)}-front-pdp?wid=800&hei=800&fmt=jpeg&qlt=85"
+    if sku_match: return f"https://lsco.scene7.com/is/image/lsco/{sku_match.group(1)}-front-pdp?wid=800&hei=800&fmt=jpeg&qlt=85"
     return None
 
 async def fetch_product_data(url: str):
@@ -224,8 +209,6 @@ async def fetch_product_data(url: str):
     image_url = extract_levis_image(url) if "levi.com" in url else None
     parsed_title = None
     parsed_brand = None
-
-    # 1. Главный парсер: curl_cffi
     try:
         async with AsyncSession() as s:
             resp = await s.get(url, impersonate="chrome", timeout=15)
@@ -237,10 +220,8 @@ async def fetch_product_data(url: str):
                 if img_match: image_url = img_match.group(1).strip()
                 price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'itemprop="price"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
                 if price_match: price = f"${price_match.group(1)}"
-    except Exception as e:
-        print(f"⚠️ Ошибка curl_cffi: {e}")
+    except Exception as e: print(f"⚠️ Ошибка curl_cffi: {e}")
 
-    # 2. Резервный парсер: Google Apps Script
     if price == "🔥 СМОТРЕТЬ НА САЙТЕ" and GAS_PROXY_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -252,28 +233,73 @@ async def fetch_product_data(url: str):
                             if data.get("image"): image_url = data.get("image")
                             if data.get("title") and "error" not in data.get("title").lower(): parsed_title = data.get("title")
                             if data.get("brand"): parsed_brand = data.get("brand")
-        except Exception:
-            pass
+        except Exception: pass
 
-    # Фильтр от мусорных заголовков
     if parsed_title:
         bad_words = ["oops", "error", "access denied", "not found", "forbidden", "something went wrong"]
         if any(word in parsed_title.lower() for word in bad_words):
-            parsed_title = None
-            image_url = None
-
+            parsed_title = None; image_url = None
     return price, image_url, parsed_title, parsed_brand
+
+# === ЛОГИКА ПОИСКА (Асинхронный перебор площадок) ===
+async def fetch_site_search(site, query):
+    encoded_query = quote(query)
+    url = site["url"].format(encoded_query)
+    try:
+        async with AsyncSession() as s:
+            resp = await s.get(url, impersonate="chrome", timeout=15)
+            if resp.status_code == 200:
+                # Ищем цены формата $99.99 или $99
+                price_matches = re.findall(r'\$(\d+(?:\.\d{2})?)', resp.text)
+                if price_matches:
+                    # Оставляем только реалистичные цены (от 10$ до 1000$)
+                    valid_prices = [float(p) for p in price_matches if 10 < float(p) < 1000]
+                    if valid_prices:
+                        min_price = min(valid_prices)
+                        return f"🛒 **{site['name']}**: от **${min_price:.2f}**\n🔗 [Открыть поиск]({url})"
+    except Exception as e:
+        print(f"Ошибка поиска на {site['name']}: {e}")
+    return None
+
+async def perform_search(query: str):
+    # Чтобы Render не завис, запускаем запросы "пачками" (не более 6 одновременно)
+    tasks = [fetch_site_search(site, query) for site in SEARCH_SITES]
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r is not None]
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")]],
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")],
+            [KeyboardButton(text="🔍 Поиск по магазинам")]
+        ],
         resize_keyboard=True
     )
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("👋 Привет! Я твой персональный радар и трекер скидок.\n\nНажимай на кнопки внизу для управления свой базой:", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой персональный радар и трекер скидок.\n\nВыбери действие на клавиатуре:", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == "🔍 Поиск по магазинам")
+@dp.message(Command("search"))
+async def start_search_flow(message: types.Message, state: FSMContext):
+    await state.set_state(SearchState.waiting_for_query)
+    await message.answer("🔎 **Что будем искать?**\nНапиши название товара (например: *Nike P-6000 black*):", parse_mode="Markdown")
+
+@dp.message(SearchState.waiting_for_query)
+async def process_search_query(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+    await state.clear()
+    await message.answer(f"⏳ Ищу `{query}` на {len(SEARCH_SITES)} площадках (займет 10-20 секунд)...")
+    
+    results = await perform_search(query)
+    
+    if not results:
+        await message.answer("😔 Ничего не удалось найти. Попробуйте изменить запрос.", reply_markup=get_main_keyboard())
+        return
+    response_text = f"🔎 **Результаты поиска:** *{query}*\n\n" + "\n\n".join(results)
+    await message.answer(response_text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "➕ Добавить ссылку")
 @dp.message(Command("track"))
@@ -281,7 +307,7 @@ async def start_tracking_flow(message: types.Message, state: FSMContext):
     await state.set_state(TrackState.waiting_for_url)
     await message.answer("🔗 **Отправь мне ссылку на вещь**, цену которой ты хочешь отслеживать:", parse_mode="Markdown")
 
-@dp.message(TrackState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку"}))
+@dp.message(TrackState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку", "🔍 Поиск по магазинам"}))
 async def process_track_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     if not url.startswith("http"):
@@ -290,7 +316,6 @@ async def process_track_url(message: types.Message, state: FSMContext):
 
     user_id = message.from_user.id
     await message.answer("⏳ Сканирую карточку товара...")
-
     fallback_title = extract_title_from_url(url)
     price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
 
@@ -322,7 +347,6 @@ async def process_track_url(message: types.Message, state: FSMContext):
             return
         except Exception as e:
             print(f"Photo error: {e}")
-
     await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
 
 @dp.message(F.text == "📋 Мой список")
@@ -330,11 +354,9 @@ async def process_track_url(message: types.Message, state: FSMContext):
 async def show_tracked_list(message: types.Message):
     user_id = message.from_user.id
     res = supabase.table("tracked_items").select("*").eq("user_id", user_id).execute()
-    
     if not res.data:
         await message.answer("📭 У тебя пока нет товаров на отслеживании.", reply_markup=get_main_keyboard())
         return
-
     await message.answer("📋 **Твои отслеживаемые товары:**", parse_mode="Markdown")
     for item in res.data:
         inline_kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -344,13 +366,11 @@ async def show_tracked_list(message: types.Message):
         brand_name = clean_markdown_text(item.get('brand') or "Одежда")
         model_name = clean_markdown_text(item.get('title') or "Товар")
         caption_text = f"🏷 **Бренд:** {brand_name}\n📦 **Модель:** {model_name}\n💳 Цена: `{item['last_price']}`"
-        
         if item.get("image_url"):
             try:
                 await message.answer_photo(photo=item.get("image_url"), caption=caption_text, parse_mode="Markdown", reply_markup=inline_kb)
                 continue
-            except Exception:
-                pass
+            except Exception: pass
         await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("del_"))
@@ -385,8 +405,7 @@ async def check_personal_tracker():
                             await bot.send_message(chat_id=item["user_id"], text=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
                             
                         supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).eq("user_id", item["user_id"]).execute()
-        except Exception as e:
-            print(f"⚠️ Ошибка трекера: {e}")
+        except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
 
 async def scan_and_post():
@@ -402,7 +421,6 @@ async def scan_and_post():
                 summary = getattr(entry, 'summary', '')
                 brand = find_matched_brand(title)
                 if not brand: continue
-                    
                 if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: continue
                 if supabase.table("posted_deals").select("id").eq("title", title).execute().data: continue
                     
@@ -415,10 +433,8 @@ async def scan_and_post():
                 
                 post_text = (
                     f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-                    f"{flag}\n\n"
-                    f"**{clean_deal_title}**\n"
-                    f"💳 **Цена:** {price}\n"
-                    f"💰 **Кэшбэк:** {cashback_info}"
+                    f"{flag}\n\n**{clean_deal_title}**\n"
+                    f"💳 **Цена:** {price}\n💰 **Кэшбэк:** {cashback_info}"
                 )
                 
                 try:
@@ -426,21 +442,16 @@ async def scan_and_post():
                         await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
                     else:
                         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-                        
                     supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
                     print(f"[Channel Radar] {flag} {brand} ({price}): {title[:30]}")
                     await asyncio.sleep(3)
-                except Exception as e:
-                    print(f"⚠️ Ошибка поста: {e}")
-        except Exception as e:
-            print(f"⚠️ Ошибка ленты {rss_url}: {e}")
+                except Exception as e: print(f"⚠️ Ошибка поста: {e}")
+        except Exception as e: print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def run_radar_loop():
     while True:
-        try:
-            await scan_and_post()
-        except Exception as e:
-            print(f"⚠️ Ошибка радара: {e}")
+        try: await scan_and_post()
+        except Exception as e: print(f"⚠️ Ошибка радара: {e}")
         await asyncio.sleep(180)
 
 async def handle_ping(request):
@@ -458,7 +469,6 @@ async def start_web_server():
 async def main():
     global http_session
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
-    
     await start_web_server()
     print("🚀 Глобальный радар и личный трекер запущены!")
     
@@ -472,11 +482,8 @@ async def main():
         radar_task.cancel()
         tracker_task.cancel()
         await bot.session.close()
-        if http_session:
-            await http_session.close()
+        if http_session: await http_session.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Бот успешно остановлен.")
+    try: asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit): print("Бот успешно остановлен.")
