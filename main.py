@@ -238,43 +238,23 @@ def extract_levi_image(url: str) -> str:
         return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp"
     return None
 
-# --- ИЗВЛЕЧЕНИЕ ТОЧНОЙ ЦЕНЫ ТОВАРА С LEVI'S И ДРУГИХ МАГАЗИНОВ ---
+# --- ВЫТАСКИВАЕМ ЦЕНУ ЧЕРЕЗ ПУБЛИЧНЫЙ SCRAPER API ---
 async def fetch_live_price(url: str) -> str:
-    art_match = re.search(r'/p/([A-Za-z0-9]+)', url)
-    if "levi.com" in url and art_match:
-        sku = art_match.group(1)
-        api_endpoint = f"https://www.levi.com/US/en_US/api/v2/products/{sku}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_endpoint, headers=headers, timeout=8) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        price_val = data.get("price", {}).get("formattedValue") or data.get("whitePrice", {}).get("formattedValue")
-                        if price_val:
-                            return price_val
-        except Exception:
-            pass
-
-    # Запрос с заголовками ПК-браузера для остальных магазинов
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    proxy_api = f"https://api.allorigins.win/get?url={url}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=8) as resp:
+            async with session.get(proxy_api, timeout=10) as resp:
                 if resp.status == 200:
-                    html = await resp.text()
-                    price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', html)
-                    if price_match:
-                        return price_match[0]
-    except Exception:
-        pass
+                    data = await resp.json()
+                    html_content = data.get("contents", "")
+                    
+                    price_matches = re.findall(r'(\$\d+(?:\.\d{2})?)', html_content)
+                    if price_matches:
+                        valid_prices = [p for p in price_matches if p != "$0.00" and p != "$0"]
+                        if valid_prices:
+                            return valid_prices[0]
+    except Exception as e:
+        print(f"⚠️ Ошибка прокси-парсинга цены: {e}")
 
     return "🔥 СМОТРЕТЬ НА САЙТЕ"
 
@@ -543,7 +523,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Price API Fixed Live!")
+    return web.Response(text="Global & Personal Proxy Price Live!")
 
 async def start_web_server():
     app = web.Application()
