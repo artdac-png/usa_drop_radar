@@ -24,6 +24,9 @@ TARGET_BRANDS = [
     "michael kors", "kors", "coach", "levi's", "levis", "levi",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "zappos", "jomashop", "6pm", "foot locker", "footlocker",
+    "jd sports", "jdsports", "jd",
+    "nordstrom rack", "rack", "finish line", "finishline", 
+    "champs sports", "champs", "dicks sporting goods", "dicks",
     "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
     "brandalley", "brand alley",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
@@ -64,6 +67,17 @@ CASHBACK_MAP = {
     "6pm": "TopCashback / Rakuten (до 4%)",
     "Foot locker": "TopCashback / Rakuten (до 4-6%)",
     "Footlocker": "TopCashback / Rakuten (до 4-6%)",
+    "Jd sports": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Jdsports": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Jd": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Nordstrom rack": "TopCashback / Rakuten (до 4-6%)",
+    "Rack": "TopCashback / Rakuten (до 4-6%)",
+    "Finish line": "TopCashback / Rakuten (до 5-7%)",
+    "Finishline": "TopCashback / Rakuten (до 5-7%)",
+    "Champs sports": "TopCashback / Rakuten (до 4-5%)",
+    "Champs": "TopCashback / Rakuten (до 4-5%)",
+    "Dicks sporting goods": "TopCashback / Rakuten (до 4-6%)",
+    "Dicks": "TopCashback / Rakuten (до 4-6%)",
     "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
     "Solomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
@@ -77,14 +91,14 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    # --- США: Поиск скидок + Купонные баннеры ---
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+joesnewbalance&rss=1"},
+    # --- США: Расширенный фид точечных скидок + Купонные баннеры ---
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+joesnewbalance+zappos+jdsports+6pm+jomashop+rack+finishline+champs+dicks&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     
-    # --- Европа (включая BrandAlley и Hoka) ---
+    # --- Европа ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -123,6 +137,16 @@ def find_matched_brand(title: str) -> str:
                 return "On Running"
             if brand in ["foot locker", "footlocker"]:
                 return "Foot Locker"
+            if brand in ["jd sports", "jdsports", "jd"]:
+                return "JD Sports"
+            if brand in ["nordstrom rack", "rack"]:
+                return "Nordstrom Rack"
+            if brand in ["finish line", "finishline"]:
+                return "Finish Line"
+            if brand in ["champs sports", "champs"]:
+                return "Champs Sports"
+            if brand in ["dicks sporting goods", "dicks"]:
+                return "Dick's Sporting Goods"
             if brand in ["joes new balance", "joesnewbalanceoutlet", "joe's new balance"]:
                 return "New Balance"
             if brand in ["levi's", "levis", "levi"]:
@@ -282,7 +306,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [BrandAlley & Hoka Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [US Stores Added] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -291,7 +315,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Radar Live!")
+    return web.Response(text="Global Multi-Brand Clean Radar Live!")
 
 async def start_web_server():
     app = web.Application()
