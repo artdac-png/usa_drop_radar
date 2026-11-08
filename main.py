@@ -44,11 +44,16 @@ TARGET_BRANDS = [
 ]
 
 EXCLUDE_STOP_WORDS = [
+    # Електроніка та годинники
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
     "laptop", "tv", "television", "monitor", "phone", "smartphone", "audio", 
     "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu",
-    "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette"
+    
+    # Парфумерія, косметика, гелі та подарункові набори
+    "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette",
+    "giftset", "gift set", "body wash", "shower gel", "deodorant", "shampoo",
+    "lotion", "cream", "soap", "skincare", "beauty"
 ]
 
 CASHBACK_MAP = {
@@ -231,7 +236,6 @@ def extract_hd_image(entry, summary: str) -> str:
     return url
 
 def extract_title_from_url(url: str) -> str:
-    """Улучшенный парсинг чистого наименования товара из любых URL"""
     parsed = urlparse(url)
     path_parts = [p for p in parsed.path.strip("/").split("/") if p]
     
