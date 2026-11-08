@@ -34,7 +34,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Глобальная сессия для запросов (чтобы не было утечек памяти)
+# Глобальная сессия для запросов
 http_session: aiohttp.ClientSession = None
 
 class TrackState(StatesGroup):
@@ -138,7 +138,7 @@ def find_matched_brand(text: str):
                 return "Hugo Boss"
             if brand in ["calvin klein", "calvin"]:
                 return "Calvin Klein"
-            return brand.title() # Исправлен регистр: "New Balance" вместо "New balance"
+            return brand.title()
             
     if "calvin" in text_lower or "calvinklein" in text_lower:
         return "Calvin Klein"
@@ -229,12 +229,15 @@ def extract_title_from_url(url: str) -> str:
     parsed = urlparse(url)
     path_parts = [p for p in parsed.path.strip("/").split("/") if p]
     
-    ignore_words = ["en_us", "us", "en", "clothing", "men", "apparel", "mens-outerwear", "outerwear", "pants", "shoes", "p"]
+    ignore_words = ["en_us", "us", "en", "clothing", "men", "apparel", "mens-outerwear", "outerwear", "pants", "shoes", "p", "uk"]
     
     for part in reversed(path_parts):
         cleaned_part = re.sub(r'\.html$', '', part, flags=re.IGNORECASE)
-        cleaned_part = re.sub(r'-[A-Z0-9]{5,12}$', '', cleaned_part)
         
+        # Если в названии есть цифры и оно короткое (это артикул) — пропускаем
+        if re.search(r'\d', cleaned_part) and len(cleaned_part) < 20:
+            continue
+            
         if len(cleaned_part) > 3 and cleaned_part.lower() not in ignore_words and not cleaned_part.isdigit():
             name = cleaned_part.replace("-", " ").title()
             return name
@@ -255,9 +258,9 @@ async def fetch_product_data(url: str):
     parsed_title = None
     parsed_brand = None
 
+    # 1. Пытаемся достать через Google Apps Script
     if GAS_PROXY_URL and "script.google.com" in GAS_PROXY_URL:
         try:
-            # Используем глобальную сессию вместо создания новой
             async with http_session.get(GAS_PROXY_URL, params={"url": url}, timeout=15) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -268,13 +271,39 @@ async def fetch_product_data(url: str):
                             image_url = data.get("image")
                         
                         title_val = data.get("title")
-                        if title_val and "error" not in title_val.lower() and "exception" not in title_val.lower():
+                        if title_val and "error" not in title_val.lower():
                             parsed_title = title_val
                             
                         if data.get("brand"):
                             parsed_brand = data.get("brand")
         except Exception as e:
-            print(f"⚠️ Ошибка запроса к Google Apps Script: {e}")
+            print(f"⚠️ Ошибка GAS: {e}")
+
+    # 2. Если GAS не смог (заблокировали), используем бесплатный Jina AI
+    if price == "🔥 СМОТРЕТЬ НА САЙТЕ" or not image_url:
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            async with http_session.get(jina_url, timeout=20) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    
+                    # Ищем цену (например, $55.97)
+                    price_match = re.search(r'\$(\d+(?:\.\d{2})?)', text)
+                    if price_match:
+                        price = f"${price_match.group(1)}"
+                    
+                    # Ищем картинку
+                    img_match = re.search(r'!\[.*?\]\((https?://[^\)]+)\)', text)
+                    if img_match and not image_url:
+                        image_url = img_match.group(1)
+                        
+                    # Ищем заголовок
+                    if not parsed_title:
+                        title_match = re.search(r'#\s+(.+)', text)
+                        if title_match:
+                            parsed_title = title_match.group(1).strip()
+        except Exception as e:
+            print(f"⚠️ Ошибка Jina AI: {e}")
 
     return price, image_url, parsed_title, parsed_brand
 
@@ -521,7 +550,6 @@ async def scan_and_post():
                 
                 clean_deal_title = clean_markdown_text(title)
                 
-                # Дублирование текста убрано
                 post_text = (
                     f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
                     f"{flag}\n\n"
@@ -584,7 +612,7 @@ async def start_web_server():
 async def main():
     global http_session
     # Создаем одну глобальную сессию для всех запросов
-    http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+    http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
     
     await start_web_server()
     print("🚀 Глобальный радар и личный трекер запущены!")
