@@ -2,8 +2,10 @@ import asyncio
 import os
 import re
 import feedparser
+import aiohttp
 from urllib.parse import urlparse
-from aiogram import Bot
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -17,6 +19,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
 # --- 1. Только целевые бренды одежды и обуви ---
 TARGET_BRANDS = [
@@ -29,21 +33,7 @@ TARGET_BRANDS = [
     "the north face", "north face", "tnf"
 ]
 
-# --- 2. Разрешенные магазины и площадки ---
-ALLOWED_STORES = [
-    "zappos", "jomashop", "6pm", "foot locker", "footlocker",
-    "jd sports", "jdsports", "jd",
-    "nordstrom rack", "rack", "finish line", "finishline", 
-    "champs sports", "champs", "dicks sporting goods", "dicks",
-    "saks off 5th", "saksoff5th", "tj maxx", "tjmaxx", "marshalls",
-    "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
-    "brandalley", "brand alley", "sports direct", "sportsdirect",
-    "solebox", "end clothing", "end.", "endclothing", "decathlon",
-    "bestsecret", "best secret", "zalando", "zalando lounge", "prive by zalando",
-    "veepee", "mandm direct", "mandm", "mandmdirect", "dressinn", "tradeinn"
-]
-
-# --- 3. Исключения (Часы, Электроника, Парфюмерия) ---
+# --- 2. Исключения (Часы, Электроника, Парфюмерия) ---
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -94,14 +84,11 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    # --- США: Поиск по целевым брендам + Купонные фиды ---
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
-    
-    # --- Европа ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -115,7 +102,6 @@ RSS_SOURCES = [
 
 def find_matched_brand(title: str) -> str:
     title_lower = title.lower()
-    
     if any(stop in title_lower for stop in EXCLUDE_STOP_WORDS):
         return None
 
@@ -141,23 +127,18 @@ def find_matched_brand(title: str) -> str:
             if brand in ["calvin klein", "calvin"]:
                 return "Calvin Klein"
             return brand.capitalize()
-            
     return None
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
-    
-    # 1. Скидки от суммы (напр: -20% от $100, 20% off $100+, spend $100 get 20%)
     spend_match = re.findall(r'(\d+%\s*(?:off|від|от)\s*(?:[\$\b\d\.\,€£\s]+|\$\d+\+?))', text, re.IGNORECASE)
     if spend_match:
         return f"🔥 СЕЙЛ ({spend_match[0].upper()})"
 
-    # 2. Комплексные акции ("Buy 2 for $80", "2 for $80")
     bundle_match = re.findall(r'(\b(?:buy\s*)?\d+\s*(?:for|por)\s*[\$\b\d\.\,€£\s]+(?:\$\d+|\d+€|\d+£)?)', text, re.IGNORECASE)
     if bundle_match:
         return bundle_match[0].strip()
 
-    # 3. Одиночная цена ($29.99, £15, 20€)
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
     match_title = re.findall(price_pattern, title)
     if match_title:
@@ -168,7 +149,6 @@ def extract_price(title: str, summary: str) -> str:
         if match_summary:
             return match_summary[0]
 
-    # 4. Баннеры процентных скидок (Extra 30% Off, Up to 65% Off)
     pct_match = re.findall(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
     if pct_match:
         return f"🔥 СЕЙЛ ({pct_match[0].upper()})"
@@ -178,27 +158,19 @@ def extract_price(title: str, summary: str) -> str:
 def extract_best_link(summary: str, default_link: str) -> str:
     if not summary:
         return default_link
-        
     urls = re.findall(r'href=["\'](https?://[^"\']+)["\']', summary, re.IGNORECASE)
-    
     redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout", "couponcabin", "bradsdeals"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws):
             return url
-            
-    forum_domains = [
-        "slickdeals.net", "mydealz.de", "chollometro.com", 
-        "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com", "couponcabin.com"
-    ]
+    forum_domains = ["slickdeals.net", "mydealz.de", "chollometro.com", "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com", "couponcabin.com"]
     for url in urls:
         if not any(domain in url.lower() for domain in forum_domains):
             return url
-
     return default_link
 
 def extract_hd_image(entry, summary: str) -> str:
     url = None
-    
     if hasattr(entry, 'media_content') and entry.media_content:
         url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
@@ -219,7 +191,6 @@ def extract_hd_image(entry, summary: str) -> str:
                 if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1", "avatar"]):
                     url = img_url
                     break
-
     if not url:
         return None
 
@@ -230,113 +201,4 @@ def extract_hd_image(entry, summary: str) -> str:
 
     if "slickdeals.net" in url:
         url = re.sub(r'/\d+x\d+/', '/800x800/', url)
-        url = re.sub(r'_(?:thumb|small|medium)\.', '.', url)
-    elif any(domain in url for domain in ["pepper.com", "static-pepper", "hotukdeals", "mydealz", "chollometro", "dealabs"]):
-        url = re.sub(r'/re/\d+x\d+/qt/\d+/', '/', url)
-
-    return url
-
-async def scan_and_post(bot: Bot):
-    for source in RSS_SOURCES:
-        flag = source["flag"]
-        rss_url = source["url"]
-        try:
-            feed = feedparser.parse(rss_url)
-            
-            for entry in feed.entries:
-                title = entry.title.strip()
-                main_link = entry.link
-                deal_id = getattr(entry, 'id', main_link)
-                summary = getattr(entry, 'summary', '')
-                
-                brand = find_matched_brand(title)
-                if not brand:
-                    continue
-
-                # --- 1. ПРОВЕРКА ДУБЛИКАТОВ (По deal_id И по названию товара) ---
-                res_id = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
-                if res_id.data:
-                    continue
-
-                res_title = supabase.table("posted_deals").select("id").eq("title", title).execute()
-                if res_title.data:
-                    continue
-
-                price = extract_price(title, summary)
-                target_link = extract_best_link(summary, main_link)
-                cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
-                image_url = extract_hd_image(entry, summary)
-
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
-                ])
-
-                post_text = (
-                    f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-                    f"{flag}\n\n"
-                    f"📦 **{title}**\n"
-                    f"🏷 **Цена:** `{price}`\n"
-                    f"💳 **Кэшбэк:** `{cashback_info}`"
-                )
-
-                try:
-                    if image_url:
-                        await bot.send_photo(
-                            chat_id=CHANNEL_ID,
-                            photo=image_url,
-                            caption=post_text,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard
-                        )
-                    else:
-                        await bot.send_message(
-                            chat_id=CHANNEL_ID,
-                            text=post_text,
-                            parse_mode="Markdown",
-                            disable_web_page_preview=False,
-                            reply_markup=keyboard
-                        )
-
-                    # Записываем и deal_id, и title для защиты от дублей
-                    supabase.table("posted_deals").insert({
-                        "deal_id": deal_id,
-                        "title": title,
-                        "brand": brand
-                    }).execute()
-
-                    print(f"🔥 [No Duplicates Live] {flag} {brand} ({price}): {title[:30]}...")
-                    await asyncio.sleep(3)
-
-                except Exception as e:
-                    print(f"❌ Ошибка отправки поста: {e}")
-        except Exception as e:
-            print(f"⚠️ Ошибка ленты {rss_url}: {e}")
-
-async def handle_ping(request):
-    return web.Response(text="Global Anti-Duplicate Radar Live!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-async def main():
-    bot = Bot(token=BOT_TOKEN)
-    await start_web_server()
-
-    print("🚀 Глобальный радар запущен!")
-    
-    while True:
-        try:
-            await scan_and_post(bot)
-        except Exception as e:
-            print(f"⚠️ Ошибка главного цикла: {e}")
-            
-        await asyncio.sleep(180)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        url = re.sub(r'_(?:thumb|small|medium)\
