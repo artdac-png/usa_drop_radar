@@ -79,22 +79,6 @@ EXCLUDE_STOP_WORDS = [
     "kids", "toddler", "infant", "youth", "baby", "child", "children"
 ]
 
-CASHBACK_MAP = {
-    "Jordan": "TopCashback / Rakuten / Beruby (до 8-10%)", "Nike": "TopCashback / Beruby / Rakuten (до 8-10%)",
-    "Adidas": "TopCashback / Beruby (до 6-8%)", "Puma": "TopCashback / iGraal (до 10%)",
-    "New Balance": "TopCashback / Rakuten (до 5%)", "The North Face": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Converse": "TopCashback / Rakuten (до 6-8%)", "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Tommy Hilfiger": "TopCashback / Rakuten (до 7%)", "Calvin Klein": "TopCashback / Rakuten (до 7%)",
-    "Guess": "TopCashback / iGraal (до 6%)", "Michael Kors": "TopCashback / Rakuten (до 6%)",
-    "Coach": "TopCashback / Rakuten (до 6%)", "Levi's": "TopCashback / iGraal (до 8%)",
-    "Hugo Boss": "TopCashback / Rakuten / iGraal (до 6-8%)", "Zara": "TopCashback / Beruby / iGraal (до 4-5%)",
-    "Mango": "TopCashback / iGraal / Beruby (до 6-8%)", "Massimo Dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
-    "H&M": "TopCashback / Rakuten / iGraal (до 4-6%)", "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)", "Saucony": "TopCashback / Rakuten (до 6-8%)",
-    "Mizuno": "TopCashback / Rakuten (до 5-7%)", "Hoka": "TopCashback / Rakuten / iGraal (до 5-8%)",
-    "On Running": "TopCashback / Rakuten / iGraal (до 5-8%)"
-}
-
 RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
@@ -137,6 +121,27 @@ def find_matched_brand(text: str):
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
+    return None
+
+# === ФУНКЦИЯ ПОИСКА ПРОМОКОДОВ ===
+def extract_promo_code(text: str):
+    if not text: return None
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text).upper()
+    
+    patterns = [
+        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15})',
+        r'USE\s*(?:PROMO\s*)?CODE[:\s]+([A-Z0-9]{4,15})',
+        r'CODE[:\s]+([A-Z0-9]{4,15})',
+        r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            code = match.group(1)
+            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE"]:
+                return code
     return None
 
 def extract_price(title: str, summary: str) -> str:
@@ -436,7 +441,7 @@ async def check_personal_tracker():
         except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
 
-# === ОБНОВЛЕННАЯ ФУНКЦИЯ РАДАРА (С ГЛУБОКОЙ ПРОВЕРКОЙ) ===
+# === ОБНОВЛЕННАЯ ФУНКЦИЯ РАДАРА (БЕЗ КЭШБЭКА) ===
 async def scan_and_post():
     for source in RSS_SOURCES:
         flag = source["flag"]
@@ -459,38 +464,42 @@ async def scan_and_post():
                 target_link = extract_best_link(summary, main_link)
                 image_url = extract_hd_image(entry, summary)
                 
-                # === ГЛУБОКАЯ ПРОВЕРКА ТОВАРА ===
+                # ПРОВЕРКА ПРОМОКОДА ИЗ ТЕКСТА RSS
+                promo_code = extract_promo_code(f"{title} {summary}")
+                
+                # ГЛУБОКАЯ ПРОВЕРКА ТОВАРА
                 try:
                     async with AsyncSession() as s:
                         resp = await s.get(target_link, impersonate="chrome", timeout=10)
                         if resp.status_code == 200:
                             html_text = resp.text.lower()
                             
-                            # 1. Проверяем, есть ли в наличии (если нет — пропускаем)
                             if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
                                 print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
-                                continue # Переходим к следующему товару
+                                continue
                                 
-                            # 2. Вытаскиваем HD картинку (она всегда лучше, чем из RSS)
                             hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
                             if hd_match: image_url = hd_match.group(1)
                             
-                            # 3. Вытаскиваем реальную цену прямо с сайта
                             real_price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'property="product:price:amount"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
                             if real_price_match: price = f"${real_price_match.group(1)}"
                 except Exception as e:
-                    print(f"⚠️ Ошибка глубокой проверки (постим по данным RSS): {e}")
-                # ===============================
+                    print(f"⚠️ Ошибка глубокой проверки: {e}")
                 
-                cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
                 clean_deal_title = clean_markdown_text(title)
                 
+                # СБОРКА ПОСТА (Кэшбэк удален)
                 post_text = (
                     f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-                    f"{flag}\n\n**{clean_deal_title}**\n"
-                    f"💳 **Цена:** {price}\n💰 **Кэшбэк:** {cashback_info}"
+                    f"{flag}\n\n"
+                    f"**{clean_deal_title}**\n"
+                    f"💳 **Цена:** {price}"
                 )
+                
+                # Добавляем промокод, только если он найден
+                if promo_code:
+                    post_text += f"\n🎟 **Промокод:** `{promo_code}`"
                 
                 try:
                     if image_url:
@@ -498,7 +507,7 @@ async def scan_and_post():
                     else:
                         await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
                     supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
-                    print(f"[Channel Radar] {flag} {brand} ({price}): {title[:30]}")
+                    print(f"[Channel Radar] {flag} {brand} ({price}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
                     await asyncio.sleep(3)
                 except Exception as e: print(f"⚠️ Ошибка поста: {e}")
         except Exception as e: print(f"⚠️ Ошибка ленты {rss_url}: {e}")
