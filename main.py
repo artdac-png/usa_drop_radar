@@ -112,10 +112,10 @@ RSS_SOURCES = [
 def clean_markdown_text(text: str) -> str:
     if not text:
         return ""
-    return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "")
+    cleaned = re.sub(r'&reg;|®|&trade;|™|&quot;', '', text, flags=re.IGNORECASE)
+    return cleaned.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "").strip()
 
 def find_matched_brand(text: str) -> str:
-    """Строгая проверка бренда для канала и личного трекера"""
     if not text:
         return None
     text_lower = text.lower()
@@ -310,7 +310,8 @@ async def process_track_url(message: types.Message, state: FSMContext):
     fallback_title = extract_title_from_url(url)
     price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
 
-    title = clean_markdown_text(parsed_title or fallback_title)
+    raw_name = parsed_title or fallback_title
+    title = clean_markdown_text(raw_name)
     brand = parsed_brand or find_matched_brand(title) or find_matched_brand(url) or "Брендовая вещь"
 
     supabase.table("tracked_items").insert({
