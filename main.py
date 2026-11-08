@@ -243,7 +243,7 @@ async def fetch_live_price(url: str) -> str:
     if GAS_PROXY_URL and "script.google.com" in GAS_PROXY_URL:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(GAS_PROXY_URL, params={"url": url}, timeout=12) as resp:
+                async with session.get(GAS_PROXY_URL, params={"url": url}, timeout=15) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("status") == "success" and data.get("price") != "NOT_FOUND":
