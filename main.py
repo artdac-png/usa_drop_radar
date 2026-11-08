@@ -4,9 +4,16 @@ import re
 import feedparser
 import aiohttp
 from urllib.parse import urlparse
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton
+)
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from aiohttp import web
@@ -21,6 +28,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Состояние ожидания ссылки от пользователя
+class TrackState(StatesGroup):
+    waiting_for_url = State()
 
 # --- 1. Только целевые бренды одежды и обуви ---
 TARGET_BRANDS = [
@@ -207,9 +218,7 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
-# --- ИЗОЛИРОВАННЫЙ МОДУЛЬ ЛИЧНОГО ТРЕКИНГА ССЫЛОК ---
 async def fetch_page_price(url: str) -> str:
-    """Безопасно запрашивает страницу товара и пытается найти цену."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         async with aiohttp.ClientSession() as session:
@@ -224,27 +233,43 @@ async def fetch_page_price(url: str) -> str:
         print(f"⚠️ Ошибка отслеживания ссылки {url}: {e}")
     return "См. на сайте"
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
-        "👋 Привет! Я твой персональный радар скидок.\n\n"
-        "📍 **Как отслеживать конкретные товары:**\n"
-        "Отправь мне команду `/track ССЫЛКА` и я начну следить за ценой!\n\n"
-        "📋 Команды:\n"
-        "`/track https://...` — добавить товар\n"
-        "`/list` — мои товары на отслеживании\n"
-        "`/untrack ID` — удалить товар"
+# --- ГЛАВНОЕ МЕНЮ С КНОПКАМИ ---
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")]
+        ],
+        resize_keyboard=True
     )
 
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "👋 Привет! Я твой персональный радар и трекер скидок.\n\n"
+        "Нажимай на кнопки внизу для управления свой базой:",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(F.text == "➕ Добавить ссылку")
 @dp.message(Command("track"))
-async def cmd_track(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ Укажи ссылку на товар: `/track https://...`", parse_mode="Markdown")
+async def start_tracking_flow(message: types.Message, state: FSMContext):
+    await state.set_state(TrackState.waiting_for_url)
+    await message.answer(
+        "🔗 **Отправь мне ссылку на вещь**, цену которой ты хочешь отслеживать:",
+        parse_mode="Markdown"
+    )
+
+@dp.message(TrackState.waiting_for_url)
+async def process_track_url(message: types.Message, state: FSMContext):
+    url = message.text.strip()
+    
+    if not url.startswith("http"):
+        await message.answer("⚠️ Это не похоже на правильную ссылку. Попробуй ещё раз отправить URL:")
         return
 
-    url = args[1].strip()
     user_id = message.from_user.id
+    await message.answer("⏳ Проверяю ссылку и считываю цену...")
 
     price = await fetch_page_price(url)
     brand = find_matched_brand(url) or "Персональный трекинг"
@@ -258,43 +283,52 @@ async def cmd_track(message: types.Message):
         "last_price": price
     }).execute()
 
+    await state.clear()
     await message.answer(
-        f"✅ **Товар добавлен на отслеживание!**\n\n"
-        f"🔗 [Перейти к товару]({url})\n"
+        f"✅ **Товар сохранен!**\n\n"
+        f"🔗 [Открыть страницу товара]({url})\n"
         f"🏷 **Текущая цена:** `{price}`\n\n"
         f"_Я напишу тебе в ЛС, как только цена изменится!_",
         parse_mode="Markdown",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=get_main_keyboard()
     )
 
+@dp.message(F.text == "📋 Мой список")
 @dp.message(Command("list"))
-async def cmd_list(message: types.Message):
+async def show_tracked_list(message: types.Message):
     user_id = message.from_user.id
     res = supabase.table("tracked_items").select("*").eq("user_id", user_id).execute()
     
     if not res.data:
-        await message.answer("📭 У тебя пока нет товаров на отслеживании.")
+        await message.answer("📭 У тебя пока нет товаров на отслеживании.", reply_markup=get_main_keyboard())
         return
 
-    text = "📋 **Твои отслеживаемые товары:**\n\n"
+    await message.answer("📋 **Твои отслеживаемые товары:**", parse_mode="Markdown")
+    
     for item in res.data:
-        text += f"🔹 **ID:** `{item['id']}` | [{item['brand']}]({item['url']})\n   🏷 Цена: `{item['last_price']}`\n\n"
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🛒 Перейти к товару", url=item["url"]),
+                InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item['id']}")
+            ]
+        ])
+        
+        await message.answer(
+            f"📦 **{item['brand']}**\n"
+            f"🏷 Цена: `{item['last_price']}`",
+            parse_mode="Markdown",
+            reply_markup=inline_kb
+        )
 
-    text += "Удалить: `/untrack ID`"
-    await message.answer(text, parse_mode="Markdown", disable_web_page_preview=True)
-
-@dp.message(Command("untrack"))
-async def cmd_untrack(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("⚠️ Укажи ID товара: `/untrack ID`")
-        return
-    item_id = args[1].strip()
+@dp.callback_query(F.data.startswith("del_"))
+async def delete_tracked_item(callback: types.CallbackQuery):
+    item_id = callback.data.split("_")[1]
     supabase.table("tracked_items").delete().eq("id", item_id).execute()
-    await message.answer(f"🗑 Товар #{item_id} удален из отслеживания.")
+    await callback.answer("Товар удален!")
+    await callback.message.delete()
 
 async def check_personal_tracker():
-    """Фоновая задача: раз в 2 часа проверяет твои персональные ссылки."""
     while True:
         try:
             res = supabase.table("tracked_items").select("*").execute()
@@ -302,22 +336,26 @@ async def check_personal_tracker():
                 for item in res.data:
                     new_price = await fetch_page_price(item["url"])
                     if new_price != "См. на сайте" and new_price != item["last_price"]:
+                        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
+                        ])
+                        
                         await bot.send_message(
                             chat_id=item["user_id"],
                             text=(
                                 f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n"
-                                f"📦 [{item['brand']}]({item['url']})\n"
+                                f"📦 **[{item['brand']}]**\n"
                                 f"🏷 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
                             ),
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=inline_kb
                         )
                         supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
         except Exception as e:
             print(f"⚠️ Ошибка фонового трекера: {e}")
             
-        await asyncio.sleep(7200) # Проверка 1 раз в 2 часа
+        await asyncio.sleep(7200)
 
-# --- ГЛОБАЛЬНЫЙ СКАНИРОВАТЕЛЬ КАНАЛА (РАБОТАЕТ КАК И РАНЬШЕ) ---
 async def scan_and_post():
     for source in RSS_SOURCES:
         flag = source["flag"]
@@ -401,7 +439,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Radar Live!")
+    return web.Response(text="Global & Personal Buttons Radar Live!")
 
 async def start_web_server():
     app = web.Application()
@@ -414,13 +452,11 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("🚀 Глобальный радар и личный трекер запущены!")
+    print("🚀 Глобальный радар и личный трекер с кнопками запущены!")
     
-    # Запуск всех фоновых задач без блокировки
     asyncio.create_task(run_radar_loop())
     asyncio.create_task(check_personal_tracker())
     
-    # Запуск обработки личных команд в Telegram
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
