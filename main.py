@@ -25,7 +25,8 @@ TARGET_BRANDS = [
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "zappos", "jomashop", "6pm", "foot locker", "footlocker",
     "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
-    "asics", "salomon", "solomon", "saucony", "soucone", "mizuno",
+    "brandalley", "brand alley",
+    "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
     "on running", "onrunning", "on-running"
 ]
 
@@ -38,6 +39,8 @@ CASHBACK_MAP = {
     "Joes new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
     "Joesnewbalanceoutlet": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
     "Joe's new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
+    "Brandalley": "TopCashback UK / Quidco (до 6-9%)",
+    "Brand alley": "TopCashback UK / Quidco (до 6-9%)",
     "Converse": "TopCashback / Rakuten (до 6-8%)",
     "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Tommy hilfiger": "TopCashback / Rakuten (до 7%)",
@@ -67,20 +70,21 @@ CASHBACK_MAP = {
     "Saucony": "TopCashback / Rakuten (до 6-8%)",
     "Soucone": "TopCashback / Rakuten (до 6-8%)",
     "Mizuno": "TopCashback / Rakuten (до 5-7%)",
+    "Hoka": "TopCashback / Rakuten / iGraal (до 5-8%)",
     "On running": "TopCashback / Rakuten / iGraal (до 5-8%)",
     "Onrunning": "TopCashback / Rakuten / iGraal (до 5-8%)",
     "On-running": "TopCashback / Rakuten / iGraal (до 5-8%)"
 }
 
 RSS_SOURCES = [
-    # --- США: Форумные скидки + Официальные купоны и баннеры брендов ---
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+onrunning+levis+joesnewbalance&rss=1"},
+    # --- США: Поиск скидок + Купонные баннеры ---
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+joesnewbalance&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     
-    # --- Европа: Форумные скидки + Аутлет-баннеры ---
+    # --- Европа (включая BrandAlley и Hoka) ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -123,18 +127,20 @@ def find_matched_brand(title: str) -> str:
                 return "New Balance"
             if brand in ["levi's", "levis", "levi"]:
                 return "Levi's"
+            if brand in ["brandalley", "brand alley"]:
+                return "BrandAlley"
             return brand.capitalize()
     return None
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
     
-    # 1. Поиск составных акций ("Buy 2 for $80", "2 for $80", "2 por 80€")
+    # 1. Комплексные акции ("Buy 2 for $80", "2 for $80")
     bundle_match = re.findall(r'(\b(?:buy\s*)?\d+\s*(?:for|por)\s*[\$\b\d\.\,€£\s]+(?:\$\d+|\d+€|\d+£)?)', text, re.IGNORECASE)
     if bundle_match:
         return bundle_match[0].strip()
 
-    # 2. Поиск классической одиночной цены ($29.99, £15, 20€)
+    # 2. Одиночная цена ($29.99, £15, 20€)
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
     match_title = re.findall(price_pattern, title)
     if match_title:
@@ -145,7 +151,7 @@ def extract_price(title: str, summary: str) -> str:
         if match_summary:
             return match_summary[0]
 
-    # 3. Поиск баннерных скидок (Extra 30% Off, Up to 65% Off)
+    # 3. Баннеры процентных скидок (Extra 30% Off, Up to 65% Off)
     pct_match = re.findall(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
     if pct_match:
         return f"🔥 СЕЙЛ ({pct_match[0].upper()})"
@@ -276,7 +282,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Direct Brand Coupon Live] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [BrandAlley & Hoka Added] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -285,7 +291,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Direct Coupon Radar Live!")
+    return web.Response(text="Global Multi-Brand Radar Live!")
 
 async def start_web_server():
     app = web.Application()
