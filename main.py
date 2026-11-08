@@ -3,7 +3,6 @@ import os
 import re
 import feedparser
 import aiohttp
-from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -216,7 +215,7 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
-# --- ПАРСИНГ МЕТАДАННЫХ ТОВАРА (ЗАГОЛОВОК, КАРТИНКА, ЦЕНА) ---
+# --- ВЫТАСКИВАНИЕ НАЗВАНИЯ, ФОТО И ЦЕНЫ БЕЗ ВСПОМОГАТЕЛЬНЫХ БИБЛИОТЕК ---
 async def parse_product_details(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -232,24 +231,25 @@ async def parse_product_details(url: str):
             async with session.get(url, headers=headers, timeout=12) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    soup = BeautifulSoup(html, 'html.parser')
 
-                    # 1. Извлекаем название
-                    og_title = soup.find("meta", property="og:title")
-                    if og_title and og_title.get("content"):
-                        title = og_title["content"].split("|")[0].split("-")[0].strip()
-                    elif soup.title:
-                        title = soup.title.string.split("|")[0].strip()
+                    # Извлекаем title через OpenGraph
+                    title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                    if title_match:
+                        title = title_match.group(1).split("|")[0].split("-")[0].strip()
+                    else:
+                        html_title = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE)
+                        if html_title:
+                            title = html_title.group(1).split("|")[0].strip()
 
-                    # 2. Извлекаем картинку товара
-                    og_image = soup.find("meta", property="og:image")
-                    if og_image and og_image.get("content"):
-                        image_url = og_image["content"]
+                    # Извлекаем image_url через OpenGraph
+                    img_match = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                    if img_match:
+                        image_url = img_match.group(1)
 
-                    # 3. Извлекаем цену
-                    og_price = soup.find("meta", property="og:price:amount") or soup.find("meta", property="product:price:amount")
-                    if og_price and og_price.get("content"):
-                        price = f"${og_price['content']}"
+                    # Извлекаем цену
+                    price_og = re.search(r'<meta[^>]*property=["\'](?:og:price:amount|product:price:amount)["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+                    if price_og:
+                        price = f"${price_og.group(1)}"
                     else:
                         price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', html)
                         if price_match:
@@ -258,7 +258,6 @@ async def parse_product_details(url: str):
     except Exception as e:
         print(f"⚠️ Ошибка вытаскивания метаданных: {e}")
 
-    # Fallback из URL если заголовок не распарсился
     if not title:
         path_parts = urlparse(url).path.strip("/").split("/")
         for part in path_parts:
@@ -527,7 +526,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Buttons Radar Live!")
+    return web.Response(text="Global & Personal Radar Live!")
 
 async def start_web_server():
     app = web.Application()
