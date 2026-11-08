@@ -244,7 +244,7 @@ async def scan_and_post(bot: Bot):
             feed = feedparser.parse(rss_url)
             
             for entry in feed.entries:
-                title = entry.title
+                title = entry.title.strip()
                 main_link = entry.link
                 deal_id = getattr(entry, 'id', main_link)
                 summary = getattr(entry, 'summary', '')
@@ -253,14 +253,18 @@ async def scan_and_post(bot: Bot):
                 if not brand:
                     continue
 
+                # --- 1. ПРОВЕРКА ДУБЛИКАТОВ (По deal_id И по названию товара) ---
+                res_id = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
+                if res_id.data:
+                    continue
+
+                res_title = supabase.table("posted_deals").select("id").eq("title", title).execute()
+                if res_title.data:
+                    continue
+
                 price = extract_price(title, summary)
                 target_link = extract_best_link(summary, main_link)
                 cashback_info = CASHBACK_MAP.get(brand, "TopCashback / Rakuten / iGraal / Beruby")
-
-                res = supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute()
-                if res.data:
-                    continue
-
                 image_url = extract_hd_image(entry, summary)
 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -293,13 +297,14 @@ async def scan_and_post(bot: Bot):
                             reply_markup=keyboard
                         )
 
+                    # Записываем и deal_id, и title для защиты от дублей
                     supabase.table("posted_deals").insert({
                         "deal_id": deal_id,
                         "title": title,
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Spend Threshold Live] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [No Duplicates Live] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -308,7 +313,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Apparel & Footwear Radar Live!")
+    return web.Response(text="Global Anti-Duplicate Radar Live!")
 
 async def start_web_server():
     app = web.Application()
