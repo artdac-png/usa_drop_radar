@@ -109,7 +109,6 @@ RSS_SOURCES = [
 ]
 
 def clean_markdown_text(text: str) -> str:
-    """Экранирует опасные спецсимволы Markdown."""
     if not text:
         return ""
     return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "")
@@ -221,49 +220,41 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
+# --- ОБХОД БЛОКИРОВОК И ИДЕАЛЬНЫЙ ПАРСИНГ ТОВАРА ЧЕРЕС МИКРО-ПРЕВЬЮ ---
 async def parse_product_details(url: str):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    
     title = None
     image_url = None
     price = "🔥 СМОТРЕТЬ НА САЙТЕ"
 
     try:
+        api_url = f"https://api.microlink.io?url={url}"
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=12) as resp:
+            async with session.get(api_url, timeout=10) as resp:
                 if resp.status == 200:
-                    html = await resp.text()
+                    data = await resp.json()
+                    res_data = data.get("data", {})
+                    
+                    if res_data.get("title"):
+                        raw_title = res_data["title"].split("|")[0].split("-")[0].strip()
+                        if raw_title and len(raw_title) > 3 and raw_title.lower() not in ["en us", "us", "en"]:
+                            title = raw_title
+                            
+                    if res_data.get("image", {}).get("url"):
+                        image_url = res_data["image"]["url"]
 
-                    title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-                    if title_match:
-                        title = title_match.group(1).split("|")[0].split("-")[0].strip()
-                    else:
-                        html_title = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE)
-                        if html_title:
-                            title = html_title.group(1).split("|")[0].strip()
-
-                    img_match = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-                    if img_match:
-                        image_url = img_match.group(1)
-
-                    price_og = re.search(r'<meta[^>]*property=["\'](?:og:price:amount|product:price:amount)["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
-                    if price_og:
-                        price = f"${price_og.group(1)}"
-                    else:
-                        price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', html)
-                        if price_match:
-                            price = price_match[0]
-
+                    description = res_data.get("description", "") or ""
+                    full_text = f"{res_data.get('title', '')} {description}"
+                    price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', full_text)
+                    if price_match:
+                        price = price_match[0]
     except Exception as e:
-        print(f"⚠️ Ошибка вытаскивания метаданных: {e}")
+        print(f"⚠️ Ошибка Microlink API: {e}")
 
+    # Fallback из URL пути
     if not title:
-        path_parts = urlparse(url).path.strip("/").split("/")
+        path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "outerwear", "pants", "shoes", "p"]]
         for part in path_parts:
-            if len(part) > 3 and not part.startswith("p") and not part.isdigit():
+            if len(part) > 3 and not part.isdigit():
                 title = part.replace("-", " ").title()
                 break
         if not title:
@@ -532,7 +523,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Markdown Fixed Radar Live!")
+    return web.Response(text="Global & Personal Microlink Radar Live!")
 
 async def start_web_server():
     app = web.Application()
@@ -545,7 +536,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("🚀 Глобальный радар и личный трекер запущены!")
+    print("🚀 Глобальный радар и личный трекер с обходом защит запущены!")
     
     asyncio.create_task(run_radar_loop())
     asyncio.create_task(check_personal_tracker())
