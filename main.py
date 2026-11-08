@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GAS_PROXY_URL = os.getenv("GAS_PROXY_URL", "")
+GAS_PROXY_URL = os.getenv("GAS_PROXY_URL", "https://script.google.com/macros/s/AKfycbz9wTr_CV3JqusBJpq-nXv-kMbk7r3mas55Pf-mfMUauX6vKj_2mSvvWkcQ10eWtrnA/exec")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
@@ -233,7 +233,6 @@ def extract_title_from_url(url: str) -> str:
     return "Одежда / Обувь"
 
 def extract_universal_sku_image(url: str) -> str:
-    """Улучшенное извлечение картинки по артикулу товара Levi's"""
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
     if sku_match:
         sku = sku_match.group(1)
@@ -241,7 +240,6 @@ def extract_universal_sku_image(url: str) -> str:
     return None
 
 async def fetch_live_price(url: str) -> str:
-    """Запрос цены через Google Apps Script или напрямую с сайта"""
     if GAS_PROXY_URL and "script.google.com" in GAS_PROXY_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -297,13 +295,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
     brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
     
     price = await fetch_live_price(url)
-    
-    # 1. Сначала пытаемся сгенерировать картинку по артикулу
     image_url = extract_universal_sku_image(url) if "levi.com" in url else None
-    
-    # 2. Если по артикулу не вышло, берем готовое фото прямо из превью Telegram
-    if not image_url and message.link_preview_options and message.link_preview_options.url:
-        pass
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
