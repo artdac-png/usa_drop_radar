@@ -142,10 +142,12 @@ def find_matched_brand(text: str) -> str:
                 return "Calvin Klein"
             return brand.capitalize()
             
+    if "calvin" in text_lower or "calvinklein" in text_lower:
+        return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower:
         return "Levi's"
         
-    return None
+    return "Одежда"
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
@@ -226,14 +228,13 @@ def extract_hd_image(entry, summary: str) -> str:
     return url
 
 def extract_title_from_url(url: str) -> str:
-    path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "outerwear", "pants", "shoes", "p"]]
-    for part in reversed(path_parts):
-        if len(part) > 3 and not part.isdigit() and not part.startswith("A"):
+    path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "apparel", "mens-outerwear", "outerwear", "pants", "shoes", "p"]]
+    for part in path_parts:
+        if len(part) > 3 and not part.isdigit() and not part.endswith(".html") and not part.startswith("A"):
             return part.replace("-", " ").title()
     return "Одежда / Обувь"
 
 def extract_universal_sku_image(url: str) -> str:
-    """Генератор фото высокой точности с подгоном параметров Scene7"""
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
     if sku_match:
         sku = sku_match.group(1)
@@ -241,9 +242,10 @@ def extract_universal_sku_image(url: str) -> str:
     return None
 
 async def fetch_product_data(url: str):
-    """Вытягивание цены и картинки из Google Apps Script"""
     price = "🔥 СМОТРЕТЬ НА САЙТЕ"
     image_url = extract_universal_sku_image(url) if "levi.com" in url else None
+    parsed_title = None
+    parsed_brand = None
 
     if GAS_PROXY_URL and "script.google.com" in GAS_PROXY_URL:
         try:
@@ -256,10 +258,14 @@ async def fetch_product_data(url: str):
                                 price = data.get("price")
                             if data.get("image"):
                                 image_url = data.get("image")
+                            if data.get("title"):
+                                parsed_title = data.get("title")
+                            if data.get("brand"):
+                                parsed_brand = data.get("brand")
         except Exception as e:
             print(f"⚠️ Ошибка запроса к Google Apps Script: {e}")
 
-    return price, image_url
+    return price, image_url, parsed_title, parsed_brand
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -298,11 +304,11 @@ async def process_track_url(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await message.answer("⏳ Сканирую карточку товара...")
 
-    parsed_title = extract_title_from_url(url)
-    title = clean_markdown_text(parsed_title)
-    brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
-    
-    price, image_url = await fetch_product_data(url)
+    fallback_title = extract_title_from_url(url)
+    price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
+
+    title = clean_markdown_text(parsed_title or fallback_title)
+    brand = parsed_brand or find_matched_brand(title) or find_matched_brand(url)
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
@@ -338,7 +344,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
             )
             sent_photo = True
         except Exception as e:
-            print(f"⚠️ Не удалось отправить photo прямо: {e}")
+            print(f"⚠️ Ошибка отправки фото: {e}")
 
     if not sent_photo:
         await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
@@ -363,8 +369,8 @@ async def show_tracked_list(message: types.Message):
             ]
         ])
         
-        brand_name = clean_markdown_text(item.get('brand') or "Levi's")
-        model_name = clean_markdown_text(item.get('title') or "Одежда")
+        brand_name = clean_markdown_text(item.get('brand') or "Одежда")
+        model_name = clean_markdown_text(item.get('title') or "Товар")
         
         caption_text = (
             f"🏷 **Бренд:** {brand_name}\n"
@@ -402,14 +408,14 @@ async def check_personal_tracker():
             res = supabase.table("tracked_items").select("*").execute()
             if res.data:
                 for item in res.data:
-                    new_price, _ = await fetch_product_data(item["url"])
+                    new_price, _, _, _ = await fetch_product_data(item["url"])
                     if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
                         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
                         ])
                         
-                        brand_name = clean_markdown_text(item.get('brand') or "Levi's")
-                        model_name = clean_markdown_text(item.get('title') or "Одежда")
+                        brand_name = clean_markdown_text(item.get('brand') or "Одежда")
+                        model_name = clean_markdown_text(item.get('title') or "Товар")
                         
                         msg_text = (
                             f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n"
@@ -532,7 +538,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal GAS Proxy Live!")
+    return web.Response(text="Global & Personal Universal Scraping Live!")
 
 async def start_web_server():
     app = web.Application()
