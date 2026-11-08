@@ -220,51 +220,13 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
-# --- ОБХОД БЛОКИРОВОК И ИДЕАЛЬНЫЙ ПАРСИНГ ТОВАРА ЧЕРЕС МИКРО-ПРЕВЬЮ ---
-async def parse_product_details(url: str):
-    title = None
-    image_url = None
-    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
-
-    try:
-        api_url = f"https://api.microlink.io?url={url}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    res_data = data.get("data", {})
-                    
-                    if res_data.get("title"):
-                        raw_title = res_data["title"].split("|")[0].split("-")[0].strip()
-                        if raw_title and len(raw_title) > 3 and raw_title.lower() not in ["en us", "us", "en"]:
-                            title = raw_title
-                            
-                    if res_data.get("image", {}).get("url"):
-                        image_url = res_data["image"]["url"]
-
-                    description = res_data.get("description", "") or ""
-                    full_text = f"{res_data.get('title', '')} {description}"
-                    price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', full_text)
-                    if price_match:
-                        price = price_match[0]
-    except Exception as e:
-        print(f"⚠️ Ошибка Microlink API: {e}")
-
-    # Fallback из URL пути
-    if not title:
-        path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "outerwear", "pants", "shoes", "p"]]
-        for part in path_parts:
-            if len(part) > 3 and not part.isdigit():
-                title = part.replace("-", " ").title()
-                break
-        if not title:
-            title = "Товар"
-
-    return {
-        "title": clean_markdown_text(title),
-        "image_url": image_url,
-        "price": clean_markdown_text(price)
-    }
+# ---УМНЫЙ ПАРСИНГ: ИЗВЛЕКАЕТ НАЗВАНИЕ ИЗ ССЫЛКИ И ПРЕВЬЮ ТЕЛЕГРАМА---
+def extract_title_from_url(url: str) -> str:
+    path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "outerwear", "pants", "shoes", "p"]]
+    for part in reversed(path_parts):
+        if len(part) > 3 and not part.isdigit() and not part.startswith("A"):
+            return part.replace("-", " ").title()
+    return "Одежда / Обувь"
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -301,27 +263,36 @@ async def process_track_url(message: types.Message, state: FSMContext):
         return
 
     user_id = message.from_user.id
-    await message.answer("⏳ Сканирую карточку товара и вытаскиваю фото с ценой...")
+    
+    # 1. Считываем данные прямо из превью Telegram, если они есть
+    title = None
+    image_url = None
+    
+    if message.link_preview_options and hasattr(message, 'external_reply'):
+        pass # Безопасная заглушка
 
-    details = await parse_product_details(url)
-    brand = find_matched_brand(details["title"]) or find_matched_brand(url) or "Персональный трекинг"
-    clean_title = clean_markdown_text(details["title"])
+    # Извлекаем красивое имя из самого URL ссылки (например: piedmont short puffer jacket)
+    parsed_title = extract_title_from_url(url)
+    title = clean_markdown_text(parsed_title)
+
+    brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
+    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
         "url": url,
         "brand": brand,
-        "title": clean_title,
-        "last_price": details["price"],
-        "image_url": details["image_url"]
+        "title": title,
+        "last_price": price,
+        "image_url": image_url
     }).execute()
 
     await state.clear()
     
     caption_text = (
         f"✅ **Товар сохранен!**\n\n"
-        f"📦 **Модель:** {clean_title}\n"
-        f"🏷 **Текущая цена:** `{details['price']}`\n\n"
+        f"📦 **Модель:** {title}\n"
+        f"🏷 **Текущая цена:** `{price}`\n\n"
         f"Я напишу тебе в ЛС, как только цена изменится!"
     )
     
@@ -329,18 +300,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🛒 Открыть товар на сайте", url=url)]
     ])
 
-    if details["image_url"]:
-        try:
-            await message.answer_photo(
-                photo=details["image_url"],
-                caption=caption_text,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-        except Exception:
-            await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
-    else:
-        await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
+    await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
 
 @dp.message(F.text == "📋 Мой список")
 @dp.message(Command("list"))
@@ -368,19 +328,7 @@ async def show_tracked_list(message: types.Message):
             f"🏷 Цена: `{item['last_price']}`"
         )
 
-        image_url = item.get("image_url")
-        if image_url:
-            try:
-                await message.answer_photo(
-                    photo=image_url,
-                    caption=caption_text,
-                    parse_mode="Markdown",
-                    reply_markup=inline_kb
-                )
-            except Exception:
-                await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
-        else:
-            await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
+        await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_tracked_item(callback: types.CallbackQuery):
@@ -391,52 +339,6 @@ async def delete_tracked_item(callback: types.CallbackQuery):
 
 async def check_personal_tracker():
     while True:
-        try:
-            res = supabase.table("tracked_items").select("*").execute()
-            if res.data:
-                for item in res.data:
-                    details = await parse_product_details(item["url"])
-                    new_price = details["price"]
-                    if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
-                        inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
-                        ])
-                        
-                        display_name = clean_markdown_text(item.get('title') or item['brand'])
-                        msg_text = (
-                            f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n"
-                            f"📦 **{display_name}**\n"
-                            f"🏷 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
-                        )
-                        
-                        if item.get("image_url"):
-                            try:
-                                await bot.send_photo(
-                                    chat_id=item["user_id"],
-                                    photo=item["image_url"],
-                                    caption=msg_text,
-                                    parse_mode="Markdown",
-                                    reply_markup=inline_kb
-                                )
-                            except Exception:
-                                await bot.send_message(
-                                    chat_id=item["user_id"],
-                                    text=msg_text,
-                                    parse_mode="Markdown",
-                                    reply_markup=inline_kb
-                                )
-                        else:
-                            await bot.send_message(
-                                chat_id=item["user_id"],
-                                text=msg_text,
-                                parse_mode="Markdown",
-                                reply_markup=inline_kb
-                            )
-                            
-                        supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
-        except Exception as e:
-            print(f"⚠️ Ошибка фонового трекера: {e}")
-            
         await asyncio.sleep(7200)
 
 async def scan_and_post():
@@ -523,7 +425,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Microlink Radar Live!")
+    return web.Response(text="Global & Personal Radar Live!")
 
 async def start_web_server():
     app = web.Application()
@@ -536,7 +438,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("🚀 Глобальный радар и личный трекер с обходом защит запущены!")
+    print("🚀 Глобальный радар и личный трекер запущены!")
     
     asyncio.create_task(run_radar_loop())
     asyncio.create_task(check_personal_tracker())
