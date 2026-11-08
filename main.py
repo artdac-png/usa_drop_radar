@@ -17,6 +17,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from aiohttp import web
+from curl_cffi.requests import AsyncSession
 
 load_dotenv()
 
@@ -31,6 +32,7 @@ dp = Dispatcher()
 
 class TrackState(StatesGroup):
     waiting_for_url = State()
+    waiting_for_price = State()  # Вернули состояние для ручного ввода
 
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
@@ -232,45 +234,50 @@ def extract_title_from_url(url: str) -> str:
     return "Одежда / Обувь"
 
 def extract_universal_sku_image(url: str) -> str:
-    """Универсальное определение артикула и получение HD картинки."""
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
     if sku_match:
         sku = sku_match.group(1)
         return f"https://lsco.scene7.com/is/image/lsco/{sku}-front-pdp"
     return None
 
-# --- МОЩНЫЙ JINA PARSER ДЛЯ СКАНИРОВАНИЯ ЦЕНЫ И МЕТАДАННЫХ БЕЗ БЛОКИРОВОК ---
-async def fetch_product_data_via_jina(url: str):
-    jina_url = f"https://r.jina.ai/{url}"
-    headers = {"X-No-Cache": "true"}
+async def fetch_live_price(url: str) -> str:
+    art_match = re.search(r'/p/([A-Za-z0-9]+)', url)
     
-    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
-    image_url = extract_universal_sku_image(url)
+    # 1. Попытка пробить внутренний API Levi's
+    if "levi.com" in url and art_match:
+        sku = art_match.group(1)
+        api_endpoint = f"https://www.levi.com/US/en_US/api/v2/products/{sku}"
+        try:
+            async with AsyncSession() as session:
+                resp = await session.get(api_endpoint, impersonate="chrome110", timeout=12)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    price_val = data.get("price", {}).get("formattedValue") or data.get("whitePrice", {}).get("formattedValue")
+                    if price_val:
+                        return price_val
+        except Exception as e:
+            print(f"⚠️ Ошибка curl_cffi Levi's API: {e}")
 
+    # 2. Общий парсинг HTML с имитацией браузера Chrome 110 для остальных
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(jina_url, headers=headers, timeout=12) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    
-                    # Ищем цену $XX.XX в отрендеренном маркдауне
-                    prices = re.findall(r'\$\d+(?:\.\d{2})?', text)
-                    if prices:
-                        valid_prices = [p for p in prices if p not in ["$0.00", "$0"]]
-                        if valid_prices:
-                            price = valid_prices[0]
-                            
-                    # Ищем ссылку на картинку, если артикул не сработал
-                    if not image_url:
-                        img_match = re.findall(r'\!\[.*?\]\((https?://[^\)]+)\)', text)
-                        for img in img_match:
-                            if any(ext in img.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']) and not any(stop in img.lower() for stop in ['logo', 'icon', 'banner', 'avatar']):
-                                image_url = img
-                                break
-    except Exception as e:
-        print(f"⚠️ Ошибка Jina Parser: {e}")
+        async with AsyncSession() as session:
+            resp = await session.get(url, impersonate="chrome110", timeout=12)
+            if resp.status_code == 200:
+                html = resp.text
+                
+                json_price = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html)
+                if json_price and json_price.group(1) not in ["0.00", "0"]:
+                    return f"${json_price.group(1)}"
 
-    return price, image_url
+                price_match = re.findall(r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)', html)
+                if price_match:
+                    valid_prices = [p for p in price_match if p not in ["$0.00", "$0"]]
+                    if valid_prices:
+                        return valid_prices[0]
+    except Exception as e:
+        print(f"⚠️ Ошибка curl_cffi парсинга HTML: {e}")
+
+    return "🔥 СМОТРЕТЬ НА САЙТЕ"
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
@@ -307,13 +314,47 @@ async def process_track_url(message: types.Message, state: FSMContext):
         return
 
     user_id = message.from_user.id
-    await message.answer("⏳ Сканирую карточку товара...")
+    await message.answer("⏳ Сканирую карточку товара (обход защиты)...")
 
     parsed_title = extract_title_from_url(url)
     title = clean_markdown_text(parsed_title)
     brand = find_matched_brand(title) or find_matched_brand(url) or "Levi's"
     
-    price, image_url = await fetch_product_data_via_jina(url)
+    price = await fetch_live_price(url)
+    image_url = extract_universal_sku_image(url) if "levi.com" in url else None
+
+    # Сохраняем временные данные в стейт, чтобы потом передать в функцию сохранения
+    await state.update_data(url=url, brand=brand, title=title, image_url=image_url)
+
+    # Если curl_cffi не смог пробить цену, просим ввести вручную
+    if price == "🔥 СМОТРЕТЬ НА САЙТЕ":
+        await state.set_state(TrackState.waiting_for_price)
+        await message.answer(
+            "⚠️ **Не удалось автоматически спарсить цену с сайта.**\n\n"
+            "Пожалуйста, введи текущую цену товара вручную (например: `$120` или `45`):",
+            parse_mode="Markdown"
+        )
+    else:
+        # Если спарсили успешно — сразу сохраняем
+        await save_and_send_product(message, state, price)
+
+# --- ДОБАВЛЕН ОБРАБОТЧИК РУЧНОГО ВВОДА ЦЕНЫ ---
+@dp.message(TrackState.waiting_for_price)
+async def process_manual_price(message: types.Message, state: FSMContext):
+    price = message.text.strip()
+    
+    if not price.startswith("$"):
+        price = f"${price}"
+
+    await save_and_send_product(message, state, price)
+
+async def save_and_send_product(message: types.Message, state: FSMContext, price: str):
+    data = await state.get_data()
+    user_id = message.from_user.id
+    url = data.get("url")
+    brand = data.get("brand")
+    title = data.get("title")
+    image_url = data.get("image_url")
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
@@ -350,6 +391,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
             await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
     else:
         await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
+
 
 @dp.message(F.text == "📋 Мой список")
 @dp.message(Command("list"))
@@ -407,7 +449,7 @@ async def check_personal_tracker():
             res = supabase.table("tracked_items").select("*").execute()
             if res.data:
                 for item in res.data:
-                    new_price, _ = await fetch_product_data_via_jina(item["url"])
+                    new_price = await fetch_live_price(item["url"])
                     if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
                         inline_kb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
@@ -537,7 +579,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Jina Reader Live!")
+    return web.Response(text="Global & Personal Native Cloudflare Bypass + Fallback Live!")
 
 async def start_web_server():
     app = web.Application()
