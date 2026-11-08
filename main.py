@@ -45,13 +45,10 @@ ALLOWED_STORES = [
 
 # --- 3. Исключения (Часы, Электроника, Парфюмерия) ---
 EXCLUDE_STOP_WORDS = [
-    # Часы и аксессуары к ним
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
-    # Электроника
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
     "laptop", "tv", "television", "monitor", "phone", "smartphone", "audio", 
     "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu",
-    # Парфюмерия и духи
     "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette"
 ]
 
@@ -117,10 +114,8 @@ RSS_SOURCES = [
 ]
 
 def find_matched_brand(title: str) -> str:
-    """Ищет исключительно целевые бренды одежды, блокируя часы и технику."""
     title_lower = title.lower()
     
-    # Проверка на часы, духи и технику
     if any(stop in title_lower for stop in EXCLUDE_STOP_WORDS):
         return None
 
@@ -143,6 +138,8 @@ def find_matched_brand(title: str) -> str:
                 return "Levi's"
             if brand in ["boss", "hugo boss"]:
                 return "Hugo Boss"
+            if brand in ["calvin klein", "calvin"]:
+                return "Calvin Klein"
             return brand.capitalize()
             
     return None
@@ -150,12 +147,17 @@ def find_matched_brand(title: str) -> str:
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
     
-    # 1. Комплексные акции ("Buy 2 for $80", "2 for $80")
+    # 1. Скидки от суммы (напр: -20% от $100, 20% off $100+, spend $100 get 20%)
+    spend_match = re.findall(r'(\d+%\s*(?:off|від|от)\s*(?:[\$\b\d\.\,€£\s]+|\$\d+\+?))', text, re.IGNORECASE)
+    if spend_match:
+        return f"🔥 СЕЙЛ ({spend_match[0].upper()})"
+
+    # 2. Комплексные акции ("Buy 2 for $80", "2 for $80")
     bundle_match = re.findall(r'(\b(?:buy\s*)?\d+\s*(?:for|por)\s*[\$\b\d\.\,€£\s]+(?:\$\d+|\d+€|\d+£)?)', text, re.IGNORECASE)
     if bundle_match:
         return bundle_match[0].strip()
 
-    # 2. Одиночная цена ($29.99, £15, 20€)
+    # 3. Одиночная цена ($29.99, £15, 20€)
     price_pattern = r'(\$\d+(?:\.\d{2})?|\b\d+(?:[.,]\d{1,2})?\s*€|€\s*\d+(?:[.,]\d{1,2})?|£\d+(?:\.\d{2})?)'
     match_title = re.findall(price_pattern, title)
     if match_title:
@@ -166,7 +168,7 @@ def extract_price(title: str, summary: str) -> str:
         if match_summary:
             return match_summary[0]
 
-    # 3. Баннеры процентных скидок (Extra 30% Off, Up to 65% Off)
+    # 4. Баннеры процентных скидок (Extra 30% Off, Up to 65% Off)
     pct_match = re.findall(r'(\d+%\s*off|extra\s*\d+%)', text, re.IGNORECASE)
     if pct_match:
         return f"🔥 СЕЙЛ ({pct_match[0].upper()})"
@@ -297,7 +299,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [No Watches Filter Live] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [Spend Threshold Live] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
