@@ -115,6 +115,9 @@ def clean_markdown_text(text: str) -> str:
     return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "")
 
 def find_matched_brand(text: str) -> str:
+    """Строгая проверка бренда для канала и личного трекера"""
+    if not text:
+        return None
     text_lower = text.lower()
     if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS):
         return None
@@ -147,7 +150,7 @@ def find_matched_brand(text: str) -> str:
     if "levi.com" in text_lower or "levi" in text_lower:
         return "Levi's"
         
-    return "Одежда"
+    return None
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
@@ -308,7 +311,7 @@ async def process_track_url(message: types.Message, state: FSMContext):
     price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
 
     title = clean_markdown_text(parsed_title or fallback_title)
-    brand = parsed_brand or find_matched_brand(title) or find_matched_brand(url)
+    brand = parsed_brand or find_matched_brand(title) or find_matched_brand(url) or "Брендовая вещь"
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
