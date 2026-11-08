@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import html
 import feedparser
 import aiohttp
 from urllib.parse import urlparse
@@ -108,8 +109,17 @@ RSS_SOURCES = [
 def clean_markdown_text(text: str) -> str:
     if not text:
         return ""
-    cleaned = re.sub(r'&reg;|®|&trade;|™|&quot;', '', text, flags=re.IGNORECASE)
-    return cleaned.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "").strip()
+    
+    # 1. Превращаем HTML-коды (&#x27;, &amp; и т.д.) в обычные символы
+    text = html.unescape(text)
+    
+    # 2. Убираем значки торговых марок
+    text = re.sub(r'&reg;|®|&trade;|™', '', text, flags=re.IGNORECASE)
+    
+    # 3. Чистим символы, которые ломают разметку Telegram
+    cleaned = text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "").strip()
+    
+    return cleaned
 
 def find_matched_brand(text: str):
     if not text:
@@ -215,17 +225,17 @@ async def fetch_product_data(url: str):
     parsed_title = None
     parsed_brand = None
 
-    # 1. Главный парсер: curl_cffi (маскируется под Chrome, обходит защиту)
+    # 1. Главный парсер: curl_cffi
     try:
         async with AsyncSession() as s:
             resp = await s.get(url, impersonate="chrome", timeout=15)
-            html = resp.text
+            html_text = resp.text
             if resp.status_code == 200:
-                title_match = re.search(r'property="og:title"\s+content="([^"]+)"', html, re.IGNORECASE) or re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+                title_match = re.search(r'property="og:title"\s+content="([^"]+)"', html_text, re.IGNORECASE) or re.search(r'<title>([^<]+)</title>', html_text, re.IGNORECASE)
                 if title_match: parsed_title = title_match.group(1).strip()
-                img_match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.IGNORECASE)
+                img_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
                 if img_match: image_url = img_match.group(1).strip()
-                price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html, re.IGNORECASE) or re.search(r'itemprop="price"\s+content="(\d+(?:\.\d{2})?)"', html, re.IGNORECASE)
+                price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'itemprop="price"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
                 if price_match: price = f"${price_match.group(1)}"
     except Exception as e:
         print(f"⚠️ Ошибка curl_cffi: {e}")
@@ -446,8 +456,11 @@ async def start_web_server():
     await site.start()
 
 async def main():
+    global http_session
+    http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    
     await start_web_server()
-    print("🚀 Бот запущен!")
+    print("🚀 Глобальный радар и личный трекер запущены!")
     
     radar_task = asyncio.create_task(run_radar_loop())
     tracker_task = asyncio.create_task(check_personal_tracker())
@@ -459,6 +472,8 @@ async def main():
         radar_task.cancel()
         tracker_task.cancel()
         await bot.session.close()
+        if http_session:
+            await http_session.close()
 
 if __name__ == "__main__":
     try:
