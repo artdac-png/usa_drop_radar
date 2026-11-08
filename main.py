@@ -231,11 +231,21 @@ def extract_hd_image(entry, summary: str) -> str:
     return url
 
 def extract_title_from_url(url: str) -> str:
-    path_parts = [p for p in urlparse(url).path.strip("/").split("/") if p and p.lower() not in ["en_us", "us", "en", "clothing", "men", "apparel", "mens-outerwear", "outerwear", "pants", "shoes", "p"]]
-    for part in path_parts:
-        if len(part) > 3 and not part.isdigit() and not part.endswith(".html") and not part.startswith("A"):
-            return part.replace("-", " ").title()
-    return "Одежда / Обувь"
+    """Улучшенный парсинг чистого наименования товара из любых URL"""
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+    
+    ignore_words = ["en_us", "us", "en", "clothing", "men", "apparel", "mens-outerwear", "outerwear", "pants", "shoes", "p"]
+    
+    for part in reversed(path_parts):
+        cleaned_part = re.sub(r'\.html$', '', part, flags=re.IGNORECASE)
+        cleaned_part = re.sub(r'-[A-Z0-9]{5,12}$', '', cleaned_part)
+        
+        if len(cleaned_part) > 3 and cleaned_part.lower() not in ignore_words and not cleaned_part.isdigit() and not cleaned_part.startswith("A"):
+            name = cleaned_part.replace("-", " ").title()
+            return name
+
+    return "Брендовая вещь"
 
 def extract_universal_sku_image(url: str) -> str:
     sku_match = re.search(r'/p/([A-Za-z0-9]+)', url)
@@ -257,12 +267,15 @@ async def fetch_product_data(url: str):
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("status") == "success":
-                            if data.get("price") != "NOT_FOUND":
+                            if data.get("price") and data.get("price") != "NOT_FOUND":
                                 price = data.get("price")
                             if data.get("image"):
                                 image_url = data.get("image")
-                            if data.get("title"):
-                                parsed_title = data.get("title")
+                            
+                            title_val = data.get("title")
+                            if title_val and "error" not in title_val.lower() and "exception" not in title_val.lower():
+                                parsed_title = title_val
+                                
                             if data.get("brand"):
                                 parsed_brand = data.get("brand")
         except Exception as e:
