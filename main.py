@@ -18,28 +18,41 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- 1. Только целевые бренды одежды и обуви ---
 TARGET_BRANDS = [
-    # --- Бренды ---
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis", "levi", "boss", "hugo boss",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
     "on running", "onrunning", "on-running",
+    "the north face", "north face", "tnf"
+]
 
-    # --- Мультибренды США ---
+# --- 2. Разрешенные магазины и площадки ---
+ALLOWED_STORES = [
     "zappos", "jomashop", "6pm", "foot locker", "footlocker",
     "jd sports", "jdsports", "jd",
     "nordstrom rack", "rack", "finish line", "finishline", 
     "champs sports", "champs", "dicks sporting goods", "dicks",
     "saks off 5th", "saksoff5th", "tj maxx", "tjmaxx", "marshalls",
     "joes new balance", "joesnewbalanceoutlet", "joe's new balance",
-
-    # --- Мультибренды, Сток и Flash Sales Европа/Великобритания ---
     "brandalley", "brand alley", "sports direct", "sportsdirect",
     "solebox", "end clothing", "end.", "endclothing", "decathlon",
     "bestsecret", "best secret", "zalando", "zalando lounge", "prive by zalando",
     "veepee", "mandm direct", "mandm", "mandmdirect", "dressinn", "tradeinn"
+]
+
+# --- 3. Исключения (Часы, Электроника, Парфюмерия) ---
+EXCLUDE_STOP_WORDS = [
+    # Часы и аксессуары к ним
+    "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
+    # Электроника
+    "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
+    "laptop", "tv", "television", "monitor", "phone", "smartphone", "audio", 
+    "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu",
+    # Парфюмерия и духи
+    "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette"
 ]
 
 CASHBACK_MAP = {
@@ -48,34 +61,9 @@ CASHBACK_MAP = {
     "Adidas": "TopCashback / Beruby (до 6-8%)",
     "Puma": "TopCashback / iGraal (до 10%)",
     "New balance": "TopCashback / Rakuten (до 5%)",
-    "Joes new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
-    "Joesnewbalanceoutlet": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
-    "Joe's new balance": "TopCashback / Rakuten / BeFrugal (до 6-8%)",
-    "Brandalley": "TopCashback UK / Quidco (до 6-9%)",
-    "Brand alley": "TopCashback UK / Quidco (до 6-9%)",
-    "Sports direct": "TopCashback UK / Quidco (до 4-7%)",
-    "Sportsdirect": "TopCashback UK / Quidco (до 4-7%)",
-    "Solebox": "TopCashback DE / iGraal (до 5-8%)",
-    "End clothing": "TopCashback UK / Quidco (до 6-8%)",
-    "End.": "TopCashback UK / Quidco (до 6-8%)",
-    "Endclothing": "TopCashback UK / Quidco (до 6-8%)",
-    "Decathlon": "TopCashback / iGraal / Beruby (до 4-6%)",
-    "Bestsecret": "TopCashback DE / Beruby (до 5-7%)",
-    "Best secret": "TopCashback DE / Beruby (до 5-7%)",
-    "Zalando": "TopCashback / Beruby / iGraal (до 4-6%)",
-    "Zalando lounge": "TopCashback / Beruby / iGraal (до 4-6%)",
-    "Prive by zalando": "TopCashback / Beruby / iGraal (до 4-6%)",
-    "Veepee": "iGraal / TopCashback FR (до 5-8%)",
-    "Mandm direct": "TopCashback UK / Quidco (до 6-10%)",
-    "Mandm": "TopCashback UK / Quidco (до 6-10%)",
-    "Mandmdirect": "TopCashback UK / Quidco (до 6-10%)",
-    "Dressinn": "TopCashback / Beruby / iGraal (до 4-6%)",
-    "Tradeinn": "TopCashback / Beruby / iGraal (до 4-6%)",
-    "Saks off 5th": "TopCashback / Rakuten (до 4-8%)",
-    "Saksoff5th": "TopCashback / Rakuten (до 4-8%)",
-    "Tj maxx": "TopCashback / Rakuten (до 4-6%)",
-    "Tjmaxx": "TopCashback / Rakuten (до 4-6%)",
-    "Marshalls": "TopCashback / Rakuten (до 4-6%)",
+    "The north face": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "North face": "TopCashback / Rakuten / iGraal (до 6-8%)",
+    "Tnf": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Converse": "TopCashback / Rakuten (до 6-8%)",
     "Lacoste": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Tommy hilfiger": "TopCashback / Rakuten (до 7%)",
@@ -96,22 +84,6 @@ CASHBACK_MAP = {
     "Massimo dutti": "TopCashback / Beruby / iGraal (до 5-7%)",
     "Massimo": "TopCashback / Beruby / iGraal (до 5-7%)",
     "H&m": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "Jomashop": "TopCashback / Rakuten (до 4%)",
-    "Zappos": "TopCashback / Rakuten (до 5%)",
-    "6pm": "TopCashback / Rakuten (до 4%)",
-    "Foot locker": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "Footlocker": "TopCashback / Rakuten / iGraal (до 4-6%)",
-    "Jd sports": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Jdsports": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Jd": "TopCashback / Rakuten / iGraal (до 6-8%)",
-    "Nordstrom rack": "TopCashback / Rakuten (до 4-6%)",
-    "Rack": "TopCashback / Rakuten (до 4-6%)",
-    "Finish line": "TopCashback / Rakuten (до 5-7%)",
-    "Finishline": "TopCashback / Rakuten (до 5-7%)",
-    "Champs sports": "TopCashback / Rakuten (до 4-5%)",
-    "Champs": "TopCashback / Rakuten (до 4-5%)",
-    "Dicks sporting goods": "TopCashback / Rakuten (до 4-6%)",
-    "Dicks": "TopCashback / Rakuten (до 4-6%)",
     "Asics": "TopCashback / Rakuten / iGraal (до 6-8%)",
     "Salomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
     "Solomon": "TopCashback / Rakuten / iGraal (до 5-7%)",
@@ -125,14 +97,14 @@ CASHBACK_MAP = {
 }
 
 RSS_SOURCES = [
-    # --- США: Фид точечных скидок + Купонные баннеры ---
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+joesnewbalance+zappos+jdsports+6pm+jomashop+rack+finishline+champs+dicks+saksoff5th+tjmaxx+marshalls&rss=1"},
+    # --- США: Поиск по целевым брендам + Купонные фиды ---
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     
-    # --- Европа (включая BestSecret, Zalando, Veepee, MandM Direct, Dressinn) ---
+    # --- Европа ---
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
@@ -144,16 +116,12 @@ RSS_SOURCES = [
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
-TECH_STOP_WORDS = [
-    "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
-    "laptop", "tv", "television", "monitor", "phone", "smartphone", "audio", 
-    "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu"
-]
-
 def find_matched_brand(title: str) -> str:
+    """Ищет исключительно целевые бренды одежды, блокируя часы и технику."""
     title_lower = title.lower()
     
-    if any(stop in title_lower for stop in TECH_STOP_WORDS):
+    # Проверка на часы, духи и технику
+    if any(stop in title_lower for stop in EXCLUDE_STOP_WORDS):
         return None
 
     for brand in TARGET_BRANDS:
@@ -169,51 +137,14 @@ def find_matched_brand(title: str) -> str:
                 return "Saucony"
             if brand in ["on running", "onrunning", "on-running"]:
                 return "On Running"
-            if brand in ["foot locker", "footlocker"]:
-                return "Foot Locker"
-            if brand in ["jd sports", "jdsports", "jd"]:
-                return "JD Sports"
-            if brand in ["nordstrom rack", "rack"]:
-                return "Nordstrom Rack"
-            if brand in ["finish line", "finishline"]:
-                return "Finish Line"
-            if brand in ["champs sports", "champs"]:
-                return "Champs Sports"
-            if brand in ["dicks sporting goods", "dicks"]:
-                return "Dick's Sporting Goods"
-            if brand in ["saks off 5th", "saksoff5th"]:
-                return "Saks OFF 5TH"
-            if brand in ["tj maxx", "tjmaxx"]:
-                return "TJ Maxx"
-            if brand in ["marshalls"]:
-                return "Marshalls"
-            if brand in ["joes new balance", "joesnewbalanceoutlet", "joe's new balance"]:
-                return "New Balance"
+            if brand in ["the north face", "north face", "tnf"]:
+                return "The North Face"
             if brand in ["levi's", "levis", "levi"]:
                 return "Levi's"
             if brand in ["boss", "hugo boss"]:
                 return "Hugo Boss"
-            if brand in ["brandalley", "brand alley"]:
-                return "BrandAlley"
-            if brand in ["sports direct", "sportsdirect"]:
-                return "Sports Direct"
-            if brand in ["end clothing", "end.", "endclothing"]:
-                return "END. Clothing"
-            if brand in ["solebox"]:
-                return "Solebox"
-            if brand in ["decathlon"]:
-                return "Decathlon"
-            if brand in ["bestsecret", "best secret"]:
-                return "BestSecret"
-            if brand in ["zalando", "zalando lounge", "prive by zalando"]:
-                return "Privé by Zalando"
-            if brand in ["veepee"]:
-                return "Veepee"
-            if brand in ["mandm direct", "mandm", "mandmdirect"]:
-                return "MandM Direct"
-            if brand in ["dressinn", "tradeinn"]:
-                return "Dressinn"
             return brand.capitalize()
+            
     return None
 
 def extract_price(title: str, summary: str) -> str:
@@ -366,7 +297,7 @@ async def scan_and_post(bot: Bot):
                         "brand": brand
                     }).execute()
 
-                    print(f"🔥 [Outlets & Flash Sales Added] {flag} {brand} ({price}): {title[:30]}...")
+                    print(f"🔥 [No Watches Filter Live] {flag} {brand} ({price}): {title[:30]}...")
                     await asyncio.sleep(3)
 
                 except Exception as e:
@@ -375,7 +306,7 @@ async def scan_and_post(bot: Bot):
             print(f"⚠️ Ошибка ленты {rss_url}: {e}")
 
 async def handle_ping(request):
-    return web.Response(text="Global Multi-Brand Clean Radar Live!")
+    return web.Response(text="Global Apparel & Footwear Radar Live!")
 
 async def start_web_server():
     app = web.Application()
