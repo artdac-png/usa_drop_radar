@@ -108,6 +108,12 @@ RSS_SOURCES = [
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
+def clean_markdown_text(text: str) -> str:
+    """Экранирует опасные спецсимволы Markdown."""
+    if not text:
+        return ""
+    return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("`", "")
+
 def find_matched_brand(title: str) -> str:
     title_lower = title.lower()
     if any(stop in title_lower for stop in EXCLUDE_STOP_WORDS):
@@ -215,7 +221,6 @@ def extract_hd_image(entry, summary: str) -> str:
 
     return url
 
-# --- ВЫТАСКИВАНИЕ НАЗВАНИЯ, ФОТО И ЦЕНЫ БЕЗ ВСПОМОГАТЕЛЬНЫХ БИБЛИОТЕК ---
 async def parse_product_details(url: str):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -232,7 +237,6 @@ async def parse_product_details(url: str):
                 if resp.status == 200:
                     html = await resp.text()
 
-                    # Извлекаем title через OpenGraph
                     title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
                     if title_match:
                         title = title_match.group(1).split("|")[0].split("-")[0].strip()
@@ -241,12 +245,10 @@ async def parse_product_details(url: str):
                         if html_title:
                             title = html_title.group(1).split("|")[0].strip()
 
-                    # Извлекаем image_url через OpenGraph
                     img_match = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
                     if img_match:
                         image_url = img_match.group(1)
 
-                    # Извлекаем цену
                     price_og = re.search(r'<meta[^>]*property=["\'](?:og:price:amount|product:price:amount)["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
                     if price_og:
                         price = f"${price_og.group(1)}"
@@ -268,9 +270,9 @@ async def parse_product_details(url: str):
             title = "Товар"
 
     return {
-        "title": title,
+        "title": clean_markdown_text(title),
         "image_url": image_url,
-        "price": price
+        "price": clean_markdown_text(price)
     }
 
 def get_main_keyboard():
@@ -312,12 +314,13 @@ async def process_track_url(message: types.Message, state: FSMContext):
 
     details = await parse_product_details(url)
     brand = find_matched_brand(details["title"]) or find_matched_brand(url) or "Персональный трекинг"
+    clean_title = clean_markdown_text(details["title"])
 
     supabase.table("tracked_items").insert({
         "user_id": user_id,
         "url": url,
         "brand": brand,
-        "title": details["title"],
+        "title": clean_title,
         "last_price": details["price"],
         "image_url": details["image_url"]
     }).execute()
@@ -326,9 +329,9 @@ async def process_track_url(message: types.Message, state: FSMContext):
     
     caption_text = (
         f"✅ **Товар сохранен!**\n\n"
-        f"📦 **Модель:** {details['title']}\n"
+        f"📦 **Модель:** {clean_title}\n"
         f"🏷 **Текущая цена:** `{details['price']}`\n\n"
-        f"_Я напишу тебе в ЛС, как только цена изменится!_"
+        f"Я напишу тебе в ЛС, как только цена изменится!"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -368,8 +371,9 @@ async def show_tracked_list(message: types.Message):
             ]
         ])
         
+        display_name = clean_markdown_text(item.get('title') or item['brand'])
         caption_text = (
-            f"📦 **{item.get('title') or item['brand']}**\n"
+            f"📦 **{display_name}**\n"
             f"🏷 Цена: `{item['last_price']}`"
         )
 
@@ -407,9 +411,10 @@ async def check_personal_tracker():
                             [InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]
                         ])
                         
+                        display_name = clean_markdown_text(item.get('title') or item['brand'])
                         msg_text = (
                             f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n"
-                            f"📦 **{item.get('title') or item['brand']}**\n"
+                            f"📦 **{display_name}**\n"
                             f"🏷 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
                         )
                         
@@ -477,10 +482,11 @@ async def scan_and_post():
                     [InlineKeyboardButton(text="🛒 КУПИТЬ (1 КЛИК)", url=target_link)]
                 ])
 
+                clean_deal_title = clean_markdown_text(title)
                 post_text = (
                     f"🚨 **DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
                     f"{flag}\n\n"
-                    f"📦 **{title}**\n"
+                    f"📦 **{clean_deal_title}**\n"
                     f"🏷 **Цена:** `{price}`\n"
                     f"💳 **Кэшбэк:** `{cashback_info}`"
                 )
@@ -526,7 +532,7 @@ async def run_radar_loop():
         await asyncio.sleep(180)
 
 async def handle_ping(request):
-    return web.Response(text="Global & Personal Radar Live!")
+    return web.Response(text="Global & Personal Markdown Fixed Radar Live!")
 
 async def start_web_server():
     app = web.Application()
@@ -539,7 +545,7 @@ async def start_web_server():
 
 async def main():
     await start_web_server()
-    print("🚀 Глобальный радар и личный трекер с картинками запущены!")
+    print("🚀 Глобальный радар и личный трекер запущены!")
     
     asyncio.create_task(run_radar_loop())
     asyncio.create_task(check_personal_tracker())
