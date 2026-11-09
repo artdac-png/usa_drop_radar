@@ -36,6 +36,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 http_session: aiohttp.ClientSession = None
+# Глобальные переменные для хранения курсов валют (базовая валюта - USD)
+EXCHANGE_RATES = {}
 
 class TrackState(StatesGroup):
     waiting_for_url = State()
@@ -63,7 +65,6 @@ EXCLUDE_STOP_WORDS = [
     "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
-# === РАСШИРЕННЫЙ СПИСОК ИСТОЧНИКОВ (ДОБАВЛЕН REDDIT) ===
 RSS_SOURCES = [
     # США
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
@@ -71,12 +72,12 @@ RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"}, # Новый источник
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"}, # Новый источник
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
     # Европа / UK
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
-    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"}, # Новый источник
+    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"},
     # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
@@ -135,6 +136,65 @@ def extract_promo_code(text: str):
             if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE"]:
                 return code
     return None
+
+# === ФУНКЦИЯ ЗАГРУЗКИ КУРСОВ ВАЛЮТ (БАЗА - ДОЛЛАР) ===
+async def load_exchange_rates():
+    global EXCHANGE_RATES
+    try:
+        async with http_session.get("https://open.er-api.com/v6/latest/USD", timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("result") == "success":
+                    rates = data["rates"]
+                    # Сохраняем курсы: сколько единиц валюты в 1 долларе США
+                    EXCHANGE_RATES = {
+                        "USD": 1.0,
+                        "GBP": rates.get("GBP", 0.79),
+                        "EUR": rates.get("EUR", 0.92),
+                        "UAH": rates.get("UAH", 41.5)
+                    }
+                    print(f"💱 Курсы валют успешно обновлены: {EXCHANGE_RATES}")
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки курсов валют: {e}")
+
+# === УМНАЯ КОНВЕРТАЦИЯ ВО ВСЕ ВАЛЮТЫ ===
+def format_price_multi(price_str: str) -> str:
+    if not price_str or not EXCHANGE_RATES:
+        return price_str
+        
+    # Ищем символ валюты и число
+    match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)', price_str)
+    if not match:
+        return price_str
+        
+    symbol = match.group(1)
+    amount = float(match.group(2).replace(',', '.'))
+    
+    # Определяем исходную валюту
+    if symbol == "$": base = "USD"
+    elif symbol == "£": base = "GBP"
+    elif symbol == "€": base = "EUR"
+    else: return price_str
+    
+    # Переводим исходную сумму в доллары США (база)
+    if base == "USD":
+        usd_amount = amount
+    else:
+        usd_amount = amount / EXCHANGE_RATES[base]
+        
+    # Считаем остальные валюты
+    gbp_amount = usd_amount * EXCHANGE_RATES["GBP"]
+    eur_amount = usd_amount * EXCHANGE_RATES["EUR"]
+    uah_amount = usd_amount * EXCHANGE_RATES["UAH"]
+    
+    # Формируем красивый вывод (не дублируем ту валюту, которая уже есть)
+    parts = []
+    if base != "USD": parts.append(f"${usd_amount:.2f}")
+    if base != "GBP": parts.append(f"£{gbp_amount:.2f}")
+    if base != "EUR": parts.append(f"€{eur_amount:.2f}")
+    
+    other_currencies = " / ".join(parts)
+    return f"{price_str} (~{other_currencies} / ~{int(uah_amount)} грн)"
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
@@ -359,18 +419,15 @@ async def check_personal_tracker():
         except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
 
-# === ОБНОВЛЕННЫЙ РАДАР (ПАРАЛЛЕЛЬНЫЙ И БЫСТРЫЙ) ===
 async def process_entry(entry, flag):
     title = entry.title.strip()
     main_link = entry.link
     deal_id = getattr(entry, 'id', main_link)
     summary = getattr(entry, 'summary', '')
     
-    # 1. Проверка на бренд и стоп-слова (отсеивает мусор и детское)
     brand = find_matched_brand(title)
     if not brand: return
     
-    # 2. Проверка на дубликаты в БД
     if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: return
     if supabase.table("posted_deals").select("id").eq("title", title).execute().data: return
         
@@ -379,14 +436,12 @@ async def process_entry(entry, flag):
     image_url = extract_hd_image(entry, summary)
     promo_code = extract_promo_code(f"{title} {summary}")
     
-    # 3. Глубокая проверка (наличие и HD картинка)
     try:
         async with AsyncSession() as s:
             resp = await s.get(target_link, impersonate="chrome", timeout=10)
             if resp.status_code == 200:
                 html_text = resp.text.lower()
                 
-                # Отсеиваем, если товар распродан
                 if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
                     print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
                     return
@@ -399,7 +454,9 @@ async def process_entry(entry, flag):
     except Exception as e:
         print(f"⚠️ Ошибка глубокой проверки: {e}")
     
-    # 4. Отправка поста в канал
+    # ПРИМЕНЯЕМ КОНВЕРТАЦИЮ ВАЛЮТ
+    price_with_multi = format_price_multi(price)
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
     clean_deal_title = clean_markdown_text(title)
     
@@ -407,7 +464,7 @@ async def process_entry(entry, flag):
         f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
         f"{flag}\n\n"
         f"**{clean_deal_title}**\n"
-        f"💳 **Цена:** {price}"
+        f"💳 **Цена:** {price_with_multi}"
     )
     if promo_code:
         post_text += f"\n🎟 **Промокод:** `{promo_code}`"
@@ -418,18 +475,15 @@ async def process_entry(entry, flag):
         else:
             await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
         
-        # Записываем в БД, чтобы не запостить снова
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
-        print(f"[Channel Radar] {flag} {brand} ({price}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
+        print(f"[Channel Radar] {flag} {brand} ({price_with_multi}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
         
-        # Задержка, чтобы Telegram не забанил канал за спам
         await asyncio.sleep(3)
     except Exception as e:
         print(f"⚠️ Ошибка поста: {e}")
 
 async def fetch_feed(source):
     try:
-        # Скачиваем RSS в отдельном потоке, чтобы не блокировать сервер
         feed = await asyncio.to_thread(feedparser.parse, source["url"])
         return feed.entries, source["flag"]
     except Exception as e:
@@ -437,21 +491,25 @@ async def fetch_feed(source):
         return [], source["flag"]
 
 async def scan_and_post():
-    # 1. Параллельно скачиваем ВСЕ RSS-ленты разом (работает в 5 раз быстрее)
     tasks = [fetch_feed(source) for source in RSS_SOURCES]
     results = await asyncio.gather(*tasks)
     
-    # 2. Проходимся по всем найденным новинкам
     for entries, flag in results:
         for entry in entries:
-            # Передаем каждый пост в функцию обработки
             await process_entry(entry, flag)
 
 async def run_radar_loop():
     while True:
         try: await scan_and_post()
         except Exception as e: print(f"⚠️ Ошибка радара: {e}")
-        await asyncio.sleep(180) # Проверка раз в 3 минуты
+        await asyncio.sleep(180)
+
+# === ФОНОВОЕ ОБНОВЛЕНИЕ КУРСОВ ВАЛЮТ (2 РАЗА В СУТКИ) ===
+async def update_rates_loop():
+    while True:
+        await load_exchange_rates()
+        # Ждем 12 часов (12 * 60 * 60 = 43200 секунд)
+        await asyncio.sleep(43200)
 
 async def handle_ping(request):
     return web.Response(text="Global & Personal Universal Scraping Live!")
@@ -468,11 +526,17 @@ async def start_web_server():
 async def main():
     global http_session
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    
+    # Загружаем курсы валют сразу при старте
+    await load_exchange_rates()
+    
     await start_web_server()
     print("🚀 Глобальный радар и личный трекер запущены!")
     
+    # Запускаем все фоновые задачи
     radar_task = asyncio.create_task(run_radar_loop())
     tracker_task = asyncio.create_task(check_personal_tracker())
+    rates_task = asyncio.create_task(update_rates_loop()) # Автообновление курсов
     
     try:
         await dp.start_polling(bot)
@@ -480,6 +544,7 @@ async def main():
         print("🛑 Останавливаем бота...")
         radar_task.cancel()
         tracker_task.cancel()
+        rates_task.cancel()
         await bot.session.close()
         if http_session: await http_session.close()
 
