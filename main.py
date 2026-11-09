@@ -44,10 +44,13 @@ class TrackState(StatesGroup):
 class SearchState(StatesGroup):
     waiting_for_query = State()
 
-# === СПИСОК ПЛОЩАДОК ДЛЯ ПОИСКА ===
+# === ОБНОВЛЕННЫЙ СПИСОК ПЛОЩАДОК (ДОБАВЛЕНЫ АУТЛЕТЫ И MANDM) ===
 SEARCH_SITES = [
     {"name": "Nike", "url": "https://www.nike.com/w?q={}", "domain": "nike.com"},
+    {"name": "Nike Clearance", "url": "https://www.nike.com/w/sale-3yaep?q={}", "domain": "nike.com"}, # Аутлет Nike
     {"name": "Adidas", "url": "https://www.adidas.com/us/search?q={}", "domain": "adidas.com"},
+    {"name": "Adidas Outlet", "url": "https://www.adidas.com/us/outlet?q={}", "domain": "adidas.com"}, # Аутлет Adidas
+    {"name": "MandM Direct", "url": "https://www.mandmdirect.com/search?description={}", "domain": "mandmdirect.com"}, # Тот самый сайт с NB
     {"name": "Footlocker US", "url": "https://www.footlocker.com/search?q={}", "domain": "footlocker.com"},
     {"name": "Footlocker UK", "url": "https://www.footlocker.co.uk/en/search?q={}", "domain": "footlocker.co.uk"},
     {"name": "JD Sports US", "url": "https://www.jdsports.com/search?q={}", "domain": "jdsports.com"},
@@ -56,8 +59,8 @@ SEARCH_SITES = [
     {"name": "Zappos", "url": "https://www.zappos.com/search?term={}", "domain": "zappos.com"},
     {"name": "Shop Simon", "url": "https://www.shopsimon.com/search?q={}", "domain": "shopsimon.com"},
     {"name": "ASOS US", "url": "https://www.asos.com/us/search/?q={}", "domain": "asos.com"},
-    {"name": "Calvin Klein", "url": "https://www.calvinklein.us/en/search?q={}", "domain": "calvinklein.us"},
-    {"name": "Levi's", "url": "https://www.levi.com/US/en_US/search?q={}", "domain": "levi.com"}
+    {"name": "Levi's Clearance", "url": "https://www.levi.com/US/en_US/search?q={}&category=sale", "domain": "levi.com"},
+    {"name": "Calvin Klein", "url": "https://www.calvinklein.us/en/search?q={}", "domain": "calvinklein.us"}
 ]
 
 TARGET_BRANDS = [
@@ -69,7 +72,6 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
 ]
 
-# === ОБНОВЛЕННЫЙ СПИСОК СТОП-СЛОВ (ДОБАВЛЕНЫ ДЕТСКИЕ РАЗМЕРЫ) ===
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -77,7 +79,6 @@ EXCLUDE_STOP_WORDS = [
     "amplifier", "soundbar", "drive", "ssd", "gpu", "cpu",
     "perfume", "fragrance", "cologne", "eau de", "parfum", "toilette",
     "giftset", "gift set", "body wash", "shower gel", "deodorant", "shampoo", "lotion", "cream", "soap", "skincare", "beauty",
-    # Детские товары:
     "kids", "toddler", "infant", "youth", "baby", "child", "children", 
     "boy", "boys", "boy's", "girl", "girls", "girl's",
     " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school"
@@ -109,7 +110,6 @@ def clean_markdown_text(text: str) -> str:
 def find_matched_brand(text: str):
     if not text: return None
     text_lower = text.lower()
-    # Проверка стоп-слов сработает до того, как бот определит бренд
     if any(stop in text_lower for stop in EXCLUDE_STOP_WORDS): return None
     for brand in TARGET_BRANDS:
         pattern = r'\b' + re.escape(brand) + r'\b'
@@ -454,7 +454,6 @@ async def scan_and_post():
                 deal_id = getattr(entry, 'id', main_link)
                 summary = getattr(entry, 'summary', '')
                 
-                # Бот пропустит пост, если найдет стоп-слово (например, Boy's или Gs)
                 brand = find_matched_brand(title)
                 if not brand: continue
                     
