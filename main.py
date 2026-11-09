@@ -41,7 +41,6 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
-# === СПИСОК БРЕНДОВ И МАГАЗИНОВ (ДОБАВЛЕНЫ CHAMPS, NORDSTROM и др.) ===
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -117,31 +116,6 @@ def find_matched_brand(text: str):
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
-    return None
-
-# === ОБНОВЛЕННЫЙ ПОИСК ПРОМОКОДОВ (С ЗАЩИТОЙ ОТ ERFORDERLICH) ===
-def extract_promo_code(text: str):
-    if not text: return None
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html.unescape(text).upper()
-    patterns = [
-        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15})',
-        r'USE\s*(?:PROMO\s*)?CODE[:\s]+([A-Z0-9]{4,15})',
-        r'CODE[:\s]+([A-Z0-9]{4,15})',
-        r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
-    ]
-    # Черный список слов, которые бот ошибочно принимает за промокод
-    blacklist = [
-        "SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED",
-        "ERFORDERLICH", "BENÖTIGT", "REQUIRED", "NEEDED", "CODE", "PROMO", 
-        "COUPON", "DISCOUNT", "VOUCHER", "SALE", "EXTRA", "OFFER"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            code = match.group(1)
-            if code not in blacklist:
-                return code
     return None
 
 async def load_exchange_rates():
@@ -435,7 +409,6 @@ async def process_entry(entry, flag):
     price = extract_price(title, summary)
     target_link = extract_best_link(summary, main_link)
     image_url = extract_hd_image(entry, summary)
-    promo_code = extract_promo_code(f"{title} {summary}")
     
     try:
         async with AsyncSession() as s:
@@ -465,14 +438,13 @@ async def process_entry(entry, flag):
 
     clean_deal_title = clean_markdown_text(title)
     
+    # Текст поста теперь без промокода
     post_text = (
         f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
         f"{flag}\n\n"
         f"**{clean_deal_title}**\n"
         f"💳 **Цена:** {price_with_multi}"
     )
-    if promo_code:
-        post_text += f"\n🎟 **Промокод:** `{promo_code}`"
     
     try:
         if image_url:
@@ -482,7 +454,7 @@ async def process_entry(entry, flag):
             await bot.send_message(chat_id=CHANNEL_ID, text=post_text_with_hidden_link, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
         
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
-        print(f"[Channel Radar] {flag} {brand} ({price_with_multi}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
+        print(f"[Channel Radar] {flag} {brand} ({price_with_multi}): {title[:30]}")
         
         await asyncio.sleep(3)
     except Exception as e:
