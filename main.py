@@ -2,10 +2,9 @@ import asyncio
 import os
 import re
 import html
-import json
 import feedparser
 import aiohttp
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -41,28 +40,6 @@ http_session: aiohttp.ClientSession = None
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
-class SearchState(StatesGroup):
-    waiting_for_query = State()
-
-# === ОБНОВЛЕННЫЙ СПИСОК ПЛОЩАДОК (ДОБАВЛЕНЫ АУТЛЕТЫ И MANDM) ===
-SEARCH_SITES = [
-    {"name": "Nike", "url": "https://www.nike.com/w?q={}", "domain": "nike.com"},
-    {"name": "Nike Clearance", "url": "https://www.nike.com/w/sale-3yaep?q={}", "domain": "nike.com"}, # Аутлет Nike
-    {"name": "Adidas", "url": "https://www.adidas.com/us/search?q={}", "domain": "adidas.com"},
-    {"name": "Adidas Outlet", "url": "https://www.adidas.com/us/outlet?q={}", "domain": "adidas.com"}, # Аутлет Adidas
-    {"name": "MandM Direct", "url": "https://www.mandmdirect.com/search?description={}", "domain": "mandmdirect.com"}, # Тот самый сайт с NB
-    {"name": "Footlocker US", "url": "https://www.footlocker.com/search?q={}", "domain": "footlocker.com"},
-    {"name": "Footlocker UK", "url": "https://www.footlocker.co.uk/en/search?q={}", "domain": "footlocker.co.uk"},
-    {"name": "JD Sports US", "url": "https://www.jdsports.com/search?q={}", "domain": "jdsports.com"},
-    {"name": "JD Sports UK", "url": "https://www.jdsports.co.uk/search/{}", "domain": "jdsports.co.uk"},
-    {"name": "Champs Sports", "url": "https://www.champssports.com/search?q={}", "domain": "champssports.com"},
-    {"name": "Zappos", "url": "https://www.zappos.com/search?term={}", "domain": "zappos.com"},
-    {"name": "Shop Simon", "url": "https://www.shopsimon.com/search?q={}", "domain": "shopsimon.com"},
-    {"name": "ASOS US", "url": "https://www.asos.com/us/search/?q={}", "domain": "asos.com"},
-    {"name": "Levi's Clearance", "url": "https://www.levi.com/US/en_US/search?q={}&category=sale", "domain": "levi.com"},
-    {"name": "Calvin Klein", "url": "https://www.calvinklein.us/en/search?q={}", "domain": "calvinklein.us"}
-]
-
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -72,6 +49,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
 ]
 
+# Стоп-слова: техника, косметика и ДЕТСКИЕ РАЗМЕРЫ
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -249,63 +227,10 @@ async def fetch_product_data(url: str):
             parsed_title = None; image_url = None
     return price, image_url, parsed_title, parsed_brand
 
-async def fetch_site_search(site, query):
-    safe_query = f"{query} -kids -toddler -infant -youth -baby -boys -girls"
-    encoded_query = quote(safe_query)
-    url = site["url"].format(encoded_query)
-    display_url = site["url"].format(quote(query))
-    
-    try:
-        async with AsyncSession() as s:
-            resp = await s.get(url, impersonate="chrome", timeout=15)
-            if resp.status_code == 200:
-                html_text = resp.text
-                json_scripts = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_text, re.DOTALL)
-                
-                best_deal = None
-                max_discount = 0
-                
-                for script in json_scripts:
-                    try:
-                        data = json.loads(script)
-                        items = data if isinstance(data, list) else (data.get("@graph", [data]) if isinstance(data, dict) else [])
-                        for item in items:
-                            if item.get("@type") in ["Product", "ProductGroup"]:
-                                offers = item.get("offers", [])
-                                if isinstance(offers, dict): offers = [offers]
-                                for offer in offers:
-                                    price = float(offer.get("price", 0) or offer.get("lowPrice", 0))
-                                    old_price = float(offer.get("highPrice", 0) or offer.get("listPrice", 0))
-                                    if old_price > price and price > 40:
-                                        discount = int(((old_price - price) / old_price) * 100)
-                                        if discount > max_discount:
-                                            max_discount = discount
-                                            name = item.get("name", "Товар")
-                                            product_url = item.get("url", display_url)
-                                            best_deal = f"🔥 **СКИДКА {discount}%** | **{site['name']}**\n📦 {name[:40]}...\n💳 ~~${old_price:.0f}~~ ➡️ **${price:.0f}**\n🔗 [Купить]({product_url})"
-                    except Exception: continue
-                        
-                if best_deal: return best_deal
-                else:
-                    price_matches = re.findall(r'\$(\d+(?:\.\d{2})?)', html_text)
-                    valid_prices = [float(p) for p in price_matches if 40 < float(p) < 1500]
-                    if valid_prices:
-                        return f"🛒 **{site['name']}**: от **${min(valid_prices):.2f}**\n🔗 [Открыть поиск]({display_url})"
-    except Exception as e: print(f"Ошибка поиска на {site['name']}: {e}")
-    return None
-
-async def perform_search(query: str):
-    tasks = [fetch_site_search(site, query) for site in SEARCH_SITES]
-    results = await asyncio.gather(*tasks)
-    clean_results = [r for r in results if r is not None]
-    clean_results.sort(key=lambda x: "СКИДКА" not in x)
-    return clean_results
-
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")],
-            [KeyboardButton(text="🔍 Поиск скидок")]
+            [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")]
         ],
         resize_keyboard=True
     )
@@ -315,33 +240,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("👋 Привет! Я твой персональный радар и трекер скидок.\n\nВыбери действие на клавиатуре:", reply_markup=get_main_keyboard())
 
-@dp.message(F.text == "🔍 Поиск скидок")
-@dp.message(Command("search"))
-async def start_search_flow(message: types.Message, state: FSMContext):
-    await state.set_state(SearchState.waiting_for_query)
-    await message.answer("🔎 **Что ищем?** (Например: *Nike P-6000 black*)\n\nЯ найду, где на это действует самая большая скидка:", parse_mode="Markdown")
-
-@dp.message(SearchState.waiting_for_query)
-async def process_search_query(message: types.Message, state: FSMContext):
-    query = message.text.strip()
-    await state.clear()
-    await message.answer(f"⏳ Ищу лучшие скидки на `{query}` среди {len(SEARCH_SITES)} площадок. Это займет до 20 секунд...")
-    
-    results = await perform_search(query)
-    
-    if not results:
-        await message.answer("😔 Не удалось найти скидки. Попробуйте изменить запрос.", reply_markup=get_main_keyboard())
-        return
-    response_text = f"🔎 **Лучшие предложения по запросу:** *{query}*\n\n" + "\n\n".join(results)
-    await message.answer(response_text, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=get_main_keyboard())
-
 @dp.message(F.text == "➕ Добавить ссылку")
 @dp.message(Command("track"))
 async def start_tracking_flow(message: types.Message, state: FSMContext):
     await state.set_state(TrackState.waiting_for_url)
     await message.answer("🔗 **Отправь мне ссылку на вещь**, цену которой ты хочешь отслеживать:", parse_mode="Markdown")
 
-@dp.message(TrackState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку", "🔍 Поиск скидок"}))
+@dp.message(TrackState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку"}))
 async def process_track_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     if not url.startswith("http"):
