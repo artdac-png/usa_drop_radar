@@ -63,9 +63,6 @@ EXCLUDE_STOP_WORDS = [
     "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
-# === РАЗДЕЛЯЕМ ИСТОЧНИКИ НА ДВЕ ГРУППЫ ===
-
-# 1. Обычные сайты (проверяем раз в 3 минуты)
 STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
@@ -83,7 +80,6 @@ STANDARD_RSS_SOURCES = [
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
-# 2. Reddit (проверяем раз в 5 минут, чтобы не забанили)
 REDDIT_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
@@ -131,7 +127,8 @@ def extract_promo_code(text: str):
         match = re.search(pattern, text)
         if match:
             code = match.group(1)
-            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE"]:
+            # Добавили WORKS в исключения
+            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED"]:
                 return code
     return None
 
@@ -441,7 +438,12 @@ async def process_entry(entry, flag):
     
     price_with_multi = format_price_multi(price)
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
+    kb_buttons = [[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]]
+    if main_link and main_link != target_link:
+        kb_buttons.append([InlineKeyboardButton(text="🔗 Источник / Обсуждение", url=main_link)])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+
     clean_deal_title = clean_markdown_text(title)
     
     post_text = (
@@ -471,10 +473,8 @@ async def fetch_feed(source):
         feed = await asyncio.to_thread(feedparser.parse, source["url"])
         return feed.entries, source["flag"]
     except Exception as e:
-        # Для Reddit ошибки блокировки — это норма, поэтому выводим тихо
         return [], source["flag"]
 
-# Универсальная функция сканирования (принимает список источников)
 async def scan_and_post(sources):
     tasks = [fetch_feed(source) for source in sources]
     results = await asyncio.gather(*tasks)
@@ -483,26 +483,22 @@ async def scan_and_post(sources):
         for entry in entries:
             await process_entry(entry, flag)
 
-# === ДВЕ НЕЗАВИСИМЫЕ ЗАДАЧИ РАДАРА ===
-
-# 1. Стандартные сайты (раз в 3 минуты)
 async def run_radar_standard():
     while True:
         try: await scan_and_post(STANDARD_RSS_SOURCES)
         except Exception as e: print(f"⚠️ Ошибка стандартного радара: {e}")
         await asyncio.sleep(180)
 
-# 2. Reddit (раз в 5 минут)
 async def run_radar_reddit():
     while True:
         try: await scan_and_post(REDDIT_RSS_SOURCES)
         except Exception as e: print(f"⚠️ Ошибка Reddit-радара: {e}")
-        await asyncio.sleep(300) # 300 секунд = 5 минут
+        await asyncio.sleep(300)
 
 async def update_rates_loop():
     while True:
         await load_exchange_rates()
-        await asyncio.sleep(43200) # 12 часов
+        await asyncio.sleep(43200)
 
 async def handle_ping(request):
     return web.Response(text="Global & Personal Universal Scraping Live!")
@@ -524,7 +520,6 @@ async def main():
     await start_web_server()
     print("🚀 Глобальный радар и личный трекер запущены!")
     
-    # Запускаем 4 фоновые задачи
     radar_std_task = asyncio.create_task(run_radar_standard())
     radar_reddit_task = asyncio.create_task(run_radar_reddit())
     tracker_task = asyncio.create_task(check_personal_tracker())
