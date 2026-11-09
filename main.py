@@ -41,13 +41,16 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
+# === СПИСОК БРЕНДОВ И МАГАЗИНОВ (ДОБАВЛЕНЫ CHAMPS, NORDSTROM и др.) ===
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
     "michael kors", "kors", "coach", "levi's", "levis", "levi", "boss", "hugo boss",
     "zara", "mango", "massimo dutti", "massimo", "h&m", "h m", "hm",
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
-    "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
+    "on running", "onrunning", "on-running", "the north face", "north face", "tnf",
+    "champs", "champs sports", "nordstrom", "nordstrom rack", "rack room", "rack room shoes",
+    "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance"
 ]
 
 EXCLUDE_STOP_WORDS = [
@@ -108,11 +111,15 @@ def find_matched_brand(text: str):
             if brand in ["levi's", "levis", "levi"]: return "Levi's"
             if brand in ["boss", "hugo boss"]: return "Hugo Boss"
             if brand in ["calvin klein", "calvin"]: return "Calvin Klein"
+            if brand in ["champs", "champs sports"]: return "Champs Sports"
+            if brand in ["nordstrom", "nordstrom rack"]: return "Nordstrom Rack"
+            if brand in ["rack room", "rack room shoes"]: return "Rack Room Shoes"
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
     return None
 
+# === ОБНОВЛЕННЫЙ ПОИСК ПРОМОКОДОВ (С ЗАЩИТОЙ ОТ ERFORDERLICH) ===
 def extract_promo_code(text: str):
     if not text: return None
     text = re.sub(r'<[^>]+>', ' ', text)
@@ -123,11 +130,17 @@ def extract_promo_code(text: str):
         r'CODE[:\s]+([A-Z0-9]{4,15})',
         r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
     ]
+    # Черный список слов, которые бот ошибочно принимает за промокод
+    blacklist = [
+        "SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED",
+        "ERFORDERLICH", "BENÖTIGT", "REQUIRED", "NEEDED", "CODE", "PROMO", 
+        "COUPON", "DISCOUNT", "VOUCHER", "SALE", "EXTRA", "OFFER"
+    ]
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             code = match.group(1)
-            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED"]:
+            if code not in blacklist:
                 return code
     return None
 
