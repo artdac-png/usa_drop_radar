@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 import html
-import hashlib
 import feedparser
 import aiohttp
 from urllib.parse import urlparse
@@ -85,22 +84,6 @@ REDDIT_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"}
-]
-
-# === РАСШИРЕННЫЙ СПИСОК САЙТОВ ДЛЯ ПРЯМОГО ПОИСКА БАННЕРОВ ===
-BANNER_SITES = [
-    {"name": "Joe's New Balance Outlet", "url": "https://www.joesnewbalanceoutlet.com/", "flag": "🇺🇸 [США / US]"},
-    {"name": "MandM Direct", "url": "https://www.mandmdirect.com/", "flag": "🇬🇧 [Великобритания / GB]"},
-    {"name": "Nike", "url": "https://www.nike.com/", "flag": "🌐 [Global]"},
-    {"name": "Adidas", "url": "https://www.adidas.com/us", "flag": "🌐 [Global]"},
-    {"name": "Footlocker", "url": "https://www.footlocker.com/", "flag": "🇺🇸 [США / US]"},
-    {"name": "JD Sports", "url": "https://www.jdsports.com/", "flag": "🇺🇸 [США / US]"},
-    {"name": "Zappos", "url": "https://www.zappos.com/", "flag": "🇺🇸 [США / US]"},
-    {"name": "ASOS", "url": "https://www.asos.com/us/", "flag": "🌐 [Global]"},
-    {"name": "The North Face", "url": "https://www.thenorthface.com/", "flag": "🌐 [Global]"},
-    {"name": "Puma", "url": "https://us.puma.com/us/en", "flag": "🌐 [Global]"},
-    {"name": "H&M", "url": "https://www2.hm.com/en_us/index.html", "flag": "🌐 [Global]"},
-    {"name": "Calvin Klein", "url": "https://www.calvinklein.us/", "flag": "🌐 [Global]"}
 ]
 
 def clean_markdown_text(text: str) -> str:
@@ -507,68 +490,6 @@ async def scan_and_post(sources):
         for entry in entries:
             await process_entry(entry, flag)
 
-# ==========================================
-# НОВАЯ ФУНКЦИЯ: ПРЯМОЙ ПОИСК БАННЕРОВ НА САЙТАХ
-# ==========================================
-async def scan_store_banners():
-    for site in BANNER_SITES:
-        try:
-            async with AsyncSession() as s:
-                resp = await s.get(site["url"], impersonate="chrome", timeout=15)
-                if resp.status_code == 200:
-                    html_text = resp.text
-                    
-                    # Ищем заголовки (h1, h2, h3) или текст с ключевыми словами акций
-                    banner_matches = re.findall(r'<(?:h1|h2|h3|div|span|a)[^>]*>([^<]*(?:Buy \d+ for|\d+% off|Extra \d+%|Clearance|Sale)[^<]*)</(?:h1|h2|h3|div|span|a)>', html_text, re.IGNORECASE)
-                    
-                    for banner_text in banner_matches:
-                        clean_banner = clean_markdown_text(banner_text)
-                        
-                        # Строгий фильтр: длина и исключение мусорных фраз
-                        if len(clean_banner) < 10 or len(clean_banner) > 100:
-                            continue
-                        if any(bad in clean_banner.lower() for bad in ["sign up", "welcome", "newsletter", "cookie", "track your"]):
-                            continue
-                            
-                        # Создаем уникальный ID для баннера
-                        banner_id = hashlib.md5(clean_banner.encode()).hexdigest()
-                        
-                        if supabase.table("posted_deals").select("id").eq("deal_id", f"banner_{banner_id}").execute().data:
-                            continue
-                            
-                        # Ищем картинку для баннера
-                        img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html_text, re.IGNORECASE)
-                        img_url = img_match.group(1) if img_match else None
-                        if img_url and img_url.startswith('/'):
-                            img_url = site["url"].rstrip('/') + img_url
-                            
-                        # Формируем пост
-                        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Перейти в магазин", url=site["url"])]])
-                        
-                        post_text = (
-                            f"**АКЦИЯ НА САЙТЕ | {site['name'].upper()}**\n"
-                            f"{site['flag']}\n\n"
-                            f"🔥 **{clean_banner}**\n\n"
-                            f"Переходите на сайт, чтобы посмотреть все товары, участвующие в акции."
-                        )
-                        
-                        if img_url:
-                            await bot.send_photo(chat_id=CHANNEL_ID, photo=img_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
-                        else:
-                            await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-                            
-                        supabase.table("posted_deals").insert({"deal_id": f"banner_{banner_id}", "title": clean_banner, "brand": site["name"]}).execute()
-                        print(f"[Banner Radar] {site['name']}: {clean_banner}")
-                        await asyncio.sleep(3)
-        except Exception as e:
-            print(f"⚠️ Ошибка сканирования баннеров {site['name']}: {e}")
-
-async def run_banner_radar():
-    while True:
-        try: await scan_store_banners()
-        except Exception as e: print(f"⚠️ Ошибка баннерного радара: {e}")
-        await asyncio.sleep(7200) # Проверяем баннеры раз в 2 часа
-
 async def run_radar_standard():
     while True:
         try: await scan_and_post(STANDARD_RSS_SOURCES)
@@ -604,11 +525,10 @@ async def main():
     
     await load_exchange_rates()
     await start_web_server()
-    print("🚀 Глобальный радар, трекер и баннерный радар запущены!")
+    print("🚀 Глобальный радар и личный трекер запущены!")
     
     radar_std_task = asyncio.create_task(run_radar_standard())
     radar_reddit_task = asyncio.create_task(run_radar_reddit())
-    radar_banner_task = asyncio.create_task(run_banner_radar()) # Запуск поиска баннеров
     tracker_task = asyncio.create_task(check_personal_tracker())
     rates_task = asyncio.create_task(update_rates_loop())
     
@@ -618,7 +538,6 @@ async def main():
         print("🛑 Останавливаем бота...")
         radar_std_task.cancel()
         radar_reddit_task.cancel()
-        radar_banner_task.cancel()
         tracker_task.cancel()
         rates_task.cancel()
         await bot.session.close()
