@@ -424,6 +424,7 @@ async def process_entry(entry, flag):
     image_url = extract_hd_image(entry, summary)
     promo_code = extract_promo_code(f"{title} {summary}")
     
+    # === ИСПРАВЛЕНИЕ: Глубокая проверка только для картинки и наличия, цену НЕ ТРОГАЕМ ===
     try:
         async with AsyncSession() as s:
             resp = await s.get(target_link, impersonate="chrome", timeout=10)
@@ -436,11 +437,9 @@ async def process_entry(entry, flag):
                     
                 hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
                 if hd_match: image_url = hd_match.group(1)
-                
-                real_price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'property="product:price:amount"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
-                if real_price_match: price = f"${real_price_match.group(1)}"
     except Exception as e:
         print(f"⚠️ Ошибка глубокой проверки: {e}")
+    # ======================================================================================
     
     price_with_multi = format_price_multi(price)
 
@@ -465,10 +464,8 @@ async def process_entry(entry, flag):
         if image_url:
             await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
         else:
-            # === ТРЮК: Если фото нет, добавляем невидимую ссылку в текст, чтобы Telegram сам подтянул превью ===
             post_text_with_hidden_link = post_text + f"\n\n[​]({target_link})"
             await bot.send_message(chat_id=CHANNEL_ID, text=post_text_with_hidden_link, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-            # ==========================================================================================
         
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
         print(f"[Channel Radar] {flag} {brand} ({price_with_multi}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
