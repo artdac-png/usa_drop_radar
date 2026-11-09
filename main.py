@@ -49,7 +49,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
 ]
 
-# Стоп-слова: техника, косметика и ДЕТСКИЕ РАЗМЕРЫ
+# Стоп-слова: техника, косметика, детские размеры и МЕРТВЫЕ СКИДКИ
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -59,23 +59,35 @@ EXCLUDE_STOP_WORDS = [
     "giftset", "gift set", "body wash", "shower gel", "deodorant", "shampoo", "lotion", "cream", "soap", "skincare", "beauty",
     "kids", "toddler", "infant", "youth", "baby", "child", "children", 
     "boy", "boys", "boy's", "girl", "girls", "girl's",
-    " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school"
+    " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school",
+    "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
+# === РАСШИРЕННЫЙ СПИСОК ИСТОЧНИКОВ (ДОБАВЛЕН REDDIT) ===
 RSS_SOURCES = [
+    # США
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"}, # Новый источник
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"}, # Новый источник
+    # Европа / UK
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
+    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"}, # Новый источник
+    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
+    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
+    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
+    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
+    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
 ]
 
@@ -347,77 +359,99 @@ async def check_personal_tracker():
         except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
 
+# === ОБНОВЛЕННЫЙ РАДАР (ПАРАЛЛЕЛЬНЫЙ И БЫСТРЫЙ) ===
+async def process_entry(entry, flag):
+    title = entry.title.strip()
+    main_link = entry.link
+    deal_id = getattr(entry, 'id', main_link)
+    summary = getattr(entry, 'summary', '')
+    
+    # 1. Проверка на бренд и стоп-слова (отсеивает мусор и детское)
+    brand = find_matched_brand(title)
+    if not brand: return
+    
+    # 2. Проверка на дубликаты в БД
+    if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: return
+    if supabase.table("posted_deals").select("id").eq("title", title).execute().data: return
+        
+    price = extract_price(title, summary)
+    target_link = extract_best_link(summary, main_link)
+    image_url = extract_hd_image(entry, summary)
+    promo_code = extract_promo_code(f"{title} {summary}")
+    
+    # 3. Глубокая проверка (наличие и HD картинка)
+    try:
+        async with AsyncSession() as s:
+            resp = await s.get(target_link, impersonate="chrome", timeout=10)
+            if resp.status_code == 200:
+                html_text = resp.text.lower()
+                
+                # Отсеиваем, если товар распродан
+                if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
+                    print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
+                    return
+                    
+                hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
+                if hd_match: image_url = hd_match.group(1)
+                
+                real_price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'property="product:price:amount"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
+                if real_price_match: price = f"${real_price_match.group(1)}"
+    except Exception as e:
+        print(f"⚠️ Ошибка глубокой проверки: {e}")
+    
+    # 4. Отправка поста в канал
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
+    clean_deal_title = clean_markdown_text(title)
+    
+    post_text = (
+        f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
+        f"{flag}\n\n"
+        f"**{clean_deal_title}**\n"
+        f"💳 **Цена:** {price}"
+    )
+    if promo_code:
+        post_text += f"\n🎟 **Промокод:** `{promo_code}`"
+    
+    try:
+        if image_url:
+            await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
+        
+        # Записываем в БД, чтобы не запостить снова
+        supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
+        print(f"[Channel Radar] {flag} {brand} ({price}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
+        
+        # Задержка, чтобы Telegram не забанил канал за спам
+        await asyncio.sleep(3)
+    except Exception as e:
+        print(f"⚠️ Ошибка поста: {e}")
+
+async def fetch_feed(source):
+    try:
+        # Скачиваем RSS в отдельном потоке, чтобы не блокировать сервер
+        feed = await asyncio.to_thread(feedparser.parse, source["url"])
+        return feed.entries, source["flag"]
+    except Exception as e:
+        print(f"⚠️ Ошибка ленты {source['url']}: {e}")
+        return [], source["flag"]
+
 async def scan_and_post():
-    for source in RSS_SOURCES:
-        flag = source["flag"]
-        rss_url = source["url"]
-        try:
-            feed = feedparser.parse(rss_url)
-            for entry in feed.entries:
-                title = entry.title.strip()
-                main_link = entry.link
-                deal_id = getattr(entry, 'id', main_link)
-                summary = getattr(entry, 'summary', '')
-                
-                brand = find_matched_brand(title)
-                if not brand: continue
-                    
-                if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: continue
-                if supabase.table("posted_deals").select("id").eq("title", title).execute().data: continue
-                    
-                price = extract_price(title, summary)
-                target_link = extract_best_link(summary, main_link)
-                image_url = extract_hd_image(entry, summary)
-                
-                promo_code = extract_promo_code(f"{title} {summary}")
-                
-                try:
-                    async with AsyncSession() as s:
-                        resp = await s.get(target_link, impersonate="chrome", timeout=10)
-                        if resp.status_code == 200:
-                            html_text = resp.text.lower()
-                            
-                            if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
-                                print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
-                                continue
-                                
-                            hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
-                            if hd_match: image_url = hd_match.group(1)
-                            
-                            real_price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'property="product:price:amount"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
-                            if real_price_match: price = f"${real_price_match.group(1)}"
-                except Exception as e:
-                    print(f"⚠️ Ошибка глубокой проверки: {e}")
-                
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
-                clean_deal_title = clean_markdown_text(title)
-                
-                post_text = (
-                    f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-                    f"{flag}\n\n"
-                    f"**{clean_deal_title}**\n"
-                    f"💳 **Цена:** {price}"
-                )
-                
-                if promo_code:
-                    post_text += f"\n🎟 **Промокод:** `{promo_code}`"
-                
-                try:
-                    if image_url:
-                        await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
-                    else:
-                        await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-                    supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
-                    print(f"[Channel Radar] {flag} {brand} ({price}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
-                    await asyncio.sleep(3)
-                except Exception as e: print(f"⚠️ Ошибка поста: {e}")
-        except Exception as e: print(f"⚠️ Ошибка ленты {rss_url}: {e}")
+    # 1. Параллельно скачиваем ВСЕ RSS-ленты разом (работает в 5 раз быстрее)
+    tasks = [fetch_feed(source) for source in RSS_SOURCES]
+    results = await asyncio.gather(*tasks)
+    
+    # 2. Проходимся по всем найденным новинкам
+    for entries, flag in results:
+        for entry in entries:
+            # Передаем каждый пост в функцию обработки
+            await process_entry(entry, flag)
 
 async def run_radar_loop():
     while True:
         try: await scan_and_post()
         except Exception as e: print(f"⚠️ Ошибка радара: {e}")
-        await asyncio.sleep(180)
+        await asyncio.sleep(180) # Проверка раз в 3 минуты
 
 async def handle_ping(request):
     return web.Response(text="Global & Personal Universal Scraping Live!")
