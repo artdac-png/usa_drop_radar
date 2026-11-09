@@ -136,13 +136,23 @@ async def load_exchange_rates():
     except Exception as e:
         print(f"⚠️ Ошибка загрузки курсов валют: {e}")
 
+# === ИСПРАВЛЕННАЯ ФУНКЦИЯ КОНВЕРТАЦИИ (ПОНИМАЕТ 35,24€) ===
 def format_price_multi(price_str: str) -> str:
     if not price_str or not EXCHANGE_RATES: return price_str
-    match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)', price_str)
+    
+    # Ищем валюту как в начале ($35.24), так и в конце (35,24€)
+    match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*([$£€])', price_str)
     if not match: return price_str
         
-    symbol = match.group(1)
-    amount = float(match.group(2).replace(',', '.'))
+    if match.group(1): # Если валюта впереди
+        symbol = match.group(1)
+        amount_str = match.group(2)
+    else: # Если валюта сзади
+        symbol = match.group(4)
+        amount_str = match.group(3)
+        
+    # Заменяем запятую на точку для правильного пересчета (35,24 -> 35.24)
+    amount = float(amount_str.replace(',', '.'))
     
     if symbol == "$": base = "USD"
     elif symbol == "£": base = "GBP"
@@ -438,7 +448,6 @@ async def process_entry(entry, flag):
 
     clean_deal_title = clean_markdown_text(title)
     
-    # Текст поста теперь без промокода
     post_text = (
         f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
         f"{flag}\n\n"
