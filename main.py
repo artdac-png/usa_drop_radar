@@ -36,7 +36,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 http_session: aiohttp.ClientSession = None
-# Глобальные переменные для хранения курсов валют (базовая валюта - USD)
 EXCHANGE_RATES = {}
 
 class TrackState(StatesGroup):
@@ -51,7 +50,6 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf"
 ]
 
-# Стоп-слова: техника, косметика, детские размеры и МЕРТВЫЕ СКИДКИ
 EXCLUDE_STOP_WORDS = [
     "watch", "watches", "chronograph", "timepiece", "smartwatch", "quartz", "dial", "clock",
     "headphone", "headphones", "earbuds", "earphone", "headset", "speaker", 
@@ -65,31 +63,31 @@ EXCLUDE_STOP_WORDS = [
     "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
-RSS_SOURCES = [
-    # США
+# === РАЗДЕЛЯЕМ ИСТОЧНИКИ НА ДВЕ ГРУППЫ ===
+
+# 1. Обычные сайты (проверяем раз в 3 минуты)
+STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
-    # Европа / UK
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
-    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"},
-    # Германия
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
-    # Испания
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
-    # Франция
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
-    # Италия
     {"flag": "🇮🇹 [Италия / IT]", "url": "https://www.pepper.it/rss/gruppo/moda-e-accessori"},
-    # Польша
     {"flag": "🇵🇱 [Польша / PL]", "url": "https://www.pepper.pl/rss/grupa/moda-i-akcesoria"}
+]
+
+# 2. Reddit (проверяем раз в 5 минут, чтобы не забанили)
+REDDIT_RSS_SOURCES = [
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
+    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"}
 ]
 
 def clean_markdown_text(text: str) -> str:
@@ -137,7 +135,6 @@ def extract_promo_code(text: str):
                 return code
     return None
 
-# === ФУНКЦИЯ ЗАГРУЗКИ КУРСОВ ВАЛЮТ (БАЗА - ДОЛЛАР) ===
 async def load_exchange_rates():
     global EXCHANGE_RATES
     try:
@@ -146,48 +143,36 @@ async def load_exchange_rates():
                 data = await resp.json()
                 if data.get("result") == "success":
                     rates = data["rates"]
-                    # Сохраняем курсы: сколько единиц валюты в 1 долларе США
                     EXCHANGE_RATES = {
                         "USD": 1.0,
                         "GBP": rates.get("GBP", 0.79),
                         "EUR": rates.get("EUR", 0.92),
                         "UAH": rates.get("UAH", 41.5)
                     }
-                    print(f"💱 Курсы валют успешно обновлены: {EXCHANGE_RATES}")
+                    print(f"💱 Курсы валют успешно обновлены.")
     except Exception as e:
         print(f"⚠️ Ошибка загрузки курсов валют: {e}")
 
-# === УМНАЯ КОНВЕРТАЦИЯ ВО ВСЕ ВАЛЮТЫ ===
 def format_price_multi(price_str: str) -> str:
-    if not price_str or not EXCHANGE_RATES:
-        return price_str
-        
-    # Ищем символ валюты и число
+    if not price_str or not EXCHANGE_RATES: return price_str
     match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)', price_str)
-    if not match:
-        return price_str
+    if not match: return price_str
         
     symbol = match.group(1)
     amount = float(match.group(2).replace(',', '.'))
     
-    # Определяем исходную валюту
     if symbol == "$": base = "USD"
     elif symbol == "£": base = "GBP"
     elif symbol == "€": base = "EUR"
     else: return price_str
     
-    # Переводим исходную сумму в доллары США (база)
-    if base == "USD":
-        usd_amount = amount
-    else:
-        usd_amount = amount / EXCHANGE_RATES[base]
+    if base == "USD": usd_amount = amount
+    else: usd_amount = amount / EXCHANGE_RATES[base]
         
-    # Считаем остальные валюты
     gbp_amount = usd_amount * EXCHANGE_RATES["GBP"]
     eur_amount = usd_amount * EXCHANGE_RATES["EUR"]
     uah_amount = usd_amount * EXCHANGE_RATES["UAH"]
     
-    # Формируем красивый вывод (не дублируем ту валюту, которая уже есть)
     parts = []
     if base != "USD": parts.append(f"${usd_amount:.2f}")
     if base != "GBP": parts.append(f"£{gbp_amount:.2f}")
@@ -218,7 +203,7 @@ def extract_best_link(summary: str, default_link: str) -> str:
     redirect_kws = ["sdtid", "buyfromdeal", "pno=", "lw/", "redirect", "out/", "checkout", "couponcabin", "bradsdeals"]
     for url in urls:
         if any(kw in url.lower() for kw in redirect_kws): return url
-    forum_domains = ["slickdeals.net", "mydealz.de", "chollometro.com", "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com", "couponcabin.com"]
+    forum_domains = ["slickdeals.net", "mydealz.de", "chollometro.com", "hotukdeals.com", "dealabs.com", "pepper.pl", "pepper.it", "dealnews.com", "bradsdeals.com", "couponcabin.com", "reddit.com"]
     for url in urls:
         if not any(domain in url.lower() for domain in forum_domains): return url
     return default_link
@@ -454,7 +439,6 @@ async def process_entry(entry, flag):
     except Exception as e:
         print(f"⚠️ Ошибка глубокой проверки: {e}")
     
-    # ПРИМЕНЯЕМ КОНВЕРТАЦИЮ ВАЛЮТ
     price_with_multi = format_price_multi(price)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]])
@@ -487,29 +471,38 @@ async def fetch_feed(source):
         feed = await asyncio.to_thread(feedparser.parse, source["url"])
         return feed.entries, source["flag"]
     except Exception as e:
-        print(f"⚠️ Ошибка ленты {source['url']}: {e}")
+        # Для Reddit ошибки блокировки — это норма, поэтому выводим тихо
         return [], source["flag"]
 
-async def scan_and_post():
-    tasks = [fetch_feed(source) for source in RSS_SOURCES]
+# Универсальная функция сканирования (принимает список источников)
+async def scan_and_post(sources):
+    tasks = [fetch_feed(source) for source in sources]
     results = await asyncio.gather(*tasks)
     
     for entries, flag in results:
         for entry in entries:
             await process_entry(entry, flag)
 
-async def run_radar_loop():
+# === ДВЕ НЕЗАВИСИМЫЕ ЗАДАЧИ РАДАРА ===
+
+# 1. Стандартные сайты (раз в 3 минуты)
+async def run_radar_standard():
     while True:
-        try: await scan_and_post()
-        except Exception as e: print(f"⚠️ Ошибка радара: {e}")
+        try: await scan_and_post(STANDARD_RSS_SOURCES)
+        except Exception as e: print(f"⚠️ Ошибка стандартного радара: {e}")
         await asyncio.sleep(180)
 
-# === ФОНОВОЕ ОБНОВЛЕНИЕ КУРСОВ ВАЛЮТ (2 РАЗА В СУТКИ) ===
+# 2. Reddit (раз в 5 минут)
+async def run_radar_reddit():
+    while True:
+        try: await scan_and_post(REDDIT_RSS_SOURCES)
+        except Exception as e: print(f"⚠️ Ошибка Reddit-радара: {e}")
+        await asyncio.sleep(300) # 300 секунд = 5 минут
+
 async def update_rates_loop():
     while True:
         await load_exchange_rates()
-        # Ждем 12 часов (12 * 60 * 60 = 43200 секунд)
-        await asyncio.sleep(43200)
+        await asyncio.sleep(43200) # 12 часов
 
 async def handle_ping(request):
     return web.Response(text="Global & Personal Universal Scraping Live!")
@@ -527,22 +520,22 @@ async def main():
     global http_session
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
     
-    # Загружаем курсы валют сразу при старте
     await load_exchange_rates()
-    
     await start_web_server()
     print("🚀 Глобальный радар и личный трекер запущены!")
     
-    # Запускаем все фоновые задачи
-    radar_task = asyncio.create_task(run_radar_loop())
+    # Запускаем 4 фоновые задачи
+    radar_std_task = asyncio.create_task(run_radar_standard())
+    radar_reddit_task = asyncio.create_task(run_radar_reddit())
     tracker_task = asyncio.create_task(check_personal_tracker())
-    rates_task = asyncio.create_task(update_rates_loop()) # Автообновление курсов
+    rates_task = asyncio.create_task(update_rates_loop())
     
     try:
         await dp.start_polling(bot)
     finally:
         print("🛑 Останавливаем бота...")
-        radar_task.cancel()
+        radar_std_task.cancel()
+        radar_reddit_task.cancel()
         tracker_task.cancel()
         rates_task.cancel()
         await bot.session.close()
