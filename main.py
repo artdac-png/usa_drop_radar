@@ -127,7 +127,6 @@ def extract_promo_code(text: str):
         match = re.search(pattern, text)
         if match:
             code = match.group(1)
-            # Добавили WORKS в исключения
             if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED"]:
                 return code
     return None
@@ -210,14 +209,21 @@ def extract_hd_image(entry, summary: str) -> str:
     if hasattr(entry, 'media_content') and entry.media_content: url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail: url = entry.media_thumbnail[0]['url']
     elif hasattr(entry, 'enclosures') and entry.enclosures: url = entry.enclosures[0].get('href')
+
     raw_html = ""
     if hasattr(entry, 'content') and entry.content: raw_html += entry.content[0].value
     if summary: raw_html += " " + summary
+
+    if not url:
+        reddit_img_matches = re.findall(r'(https?://(?:i|preview|external-preview)\.redd\.it/[^\s"\'<>]+)', raw_html, re.IGNORECASE)
+        if reddit_img_matches:
+            url = reddit_img_matches[0].replace('&amp;', '&')
+
     if not url and raw_html:
-        img_matches = re.findall(r'(?:src|data-src)=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
+        img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if img_matches:
             for img_url in img_matches:
-                if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1", "avatar"]):
+                if not any(stop in img_url.lower() for stop in ["beacon", "tracking", ".gif", "1x1", "avatar", "logo"]):
                     url = img_url; break
     if not url: return None
     if url.startswith('//'): url = 'https:' + url
@@ -459,7 +465,10 @@ async def process_entry(entry, flag):
         if image_url:
             await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
         else:
-            await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
+            # === ТРЮК: Если фото нет, добавляем невидимую ссылку в текст, чтобы Telegram сам подтянул превью ===
+            post_text_with_hidden_link = post_text + f"\n\n[​]({target_link})"
+            await bot.send_message(chat_id=CHANNEL_ID, text=post_text_with_hidden_link, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
+            # ==========================================================================================
         
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
         print(f"[Channel Radar] {flag} {brand} ({price_with_multi}) | Промокод: {promo_code if promo_code else 'Нет'}: {title[:30]}")
