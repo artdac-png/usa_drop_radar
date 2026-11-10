@@ -2,6 +2,9 @@ import asyncio
 import os
 import re
 import html
+import imaplib
+import email
+from email.header import decode_header
 import feedparser
 import aiohttp
 from urllib.parse import urlparse
@@ -27,6 +30,10 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
+
+# Данные для почты (UKR.NET)
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise RuntimeError("❌ Ошибка: Не заданы BOT_TOKEN, SUPABASE_URL или SUPABASE_KEY!")
@@ -136,22 +143,19 @@ async def load_exchange_rates():
     except Exception as e:
         print(f"⚠️ Ошибка загрузки курсов валют: {e}")
 
-# === ИСПРАВЛЕННАЯ ФУНКЦИЯ КОНВЕРТАЦИИ (ПОНИМАЕТ 35,24€) ===
 def format_price_multi(price_str: str) -> str:
     if not price_str or not EXCHANGE_RATES: return price_str
     
-    # Ищем валюту как в начале ($35.24), так и в конце (35,24€)
     match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*([$£€])', price_str)
     if not match: return price_str
         
-    if match.group(1): # Если валюта впереди
+    if match.group(1):
         symbol = match.group(1)
         amount_str = match.group(2)
-    else: # Если валюта сзади
+    else:
         symbol = match.group(4)
         amount_str = match.group(3)
         
-    # Заменяем запятую на точку для правильного пересчета (35,24 -> 35.24)
     amount = float(amount_str.replace(',', '.'))
     
     if symbol == "$": base = "USD"
@@ -496,6 +500,140 @@ async def run_radar_reddit():
         except Exception as e: print(f"⚠️ Ошибка Reddit-радара: {e}")
         await asyncio.sleep(300)
 
+# === МОДУЛЬ ЧТЕНИЯ ПОЧТЫ (UKR.NET) ===
+def fetch_emails_sync():
+    if not EMAIL_USER or not EMAIL_PASS:
+        return []
+    
+    emails_to_process = []
+    try:
+        # Сервер для UKR.NET
+        server = "imap.ukr.net"
+
+        mail = imaplib.IMAP4_SSL(server)
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("inbox")
+        
+        status, messages = mail.search(None, "UNSEEN")
+        if status == "OK" and messages[0]:
+            email_ids = messages[0].split()
+            for e_id in email_ids:
+                _, msg_data = mail.fetch(e_id, "(RFC822)")
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        
+                        subject, encoding = decode_header(msg["Subject"])[0]
+                        if isinstance(subject, bytes):
+                            subject = subject.decode(encoding if encoding else "utf-8")
+                            
+                        sender = msg.get("From")
+                        
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                if part.get_content_type() == "text/html":
+                                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                                    break
+                        else:
+                            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            
+                        emails_to_process.append({"subject": subject, "sender": sender, "body": body})
+                
+                mail.store(e_id, '+FLAGS', '\\Seen')
+                
+        mail.logout()
+    except Exception as e:
+        print(f"⚠️ Ошибка IMAP почты: {e}")
+    
+    return emails_to_process
+
+def extract_promo_code_from_email(text: str):
+    if not text: return None
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text).upper()
+    patterns = [
+        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15})',
+        r'USE\s*(?:PROMO\s*)?CODE[:\s]+([A-Z0-9]{4,15})',
+        r'CODE[:\s]+([A-Z0-9]{4,15})',
+        r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            code = match.group(1)
+            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED", "ERFORDERLICH", "REQUIRED"]:
+                return code
+    return None
+
+async def check_emails():
+    if not EMAIL_USER or not EMAIL_PASS:
+        return
+        
+    print("📧 Проверяем почту на новые скидки...")
+    emails = await asyncio.to_thread(fetch_emails_sync)
+    
+    for email_data in emails:
+        subject = email_data["subject"]
+        sender = email_data["sender"]
+        body = email_data["body"]
+        
+        text_to_check = f"{subject} {sender}"
+        brand = find_matched_brand(text_to_check)
+        
+        promo_code = extract_promo_code_from_email(body)
+        if not brand and not promo_code:
+            continue
+            
+        if not brand: brand = "Shop Deal"
+        
+        email_id = hash(subject + sender)
+        if supabase.table("posted_deals").select("id").eq("deal_id", f"email_{email_id}").execute().data:
+            continue
+            
+        price = extract_price(subject, body)
+        image_url = extract_hd_image(type('obj', (object,), {'content': [type('obj', (object,), {'value': body})]}), body)
+        
+        price_with_multi = format_price_multi(price)
+        
+        kb_buttons = []
+        link_match = re.search(r'href=["\'](https?://[^"\']+)["\']', body)
+        if link_match:
+            kb_buttons.append([InlineKeyboardButton(text="🛒 Перейти к акции", url=link_match.group(1))])
+            
+        keyboard = InlineKeyboardMarkup(inline_keyboard=kb_buttons) if kb_buttons else None
+
+        clean_deal_title = clean_markdown_text(subject)
+        
+        post_text = (
+            f"**📧 EMAIL DEAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
+            f"🌐 [Из рассылки]\n\n"
+            f"**{clean_deal_title}**\n"
+            f"💳 **Цена:** {price_with_multi}"
+        )
+        if promo_code:
+            post_text += f"\n🎟 **Промокод:** `{promo_code}`"
+            
+        try:
+            if image_url:
+                await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
+            else:
+                await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
+            
+            supabase.table("posted_deals").insert({"deal_id": f"email_{email_id}", "title": subject, "brand": brand}).execute()
+            print(f"[Email Radar] {brand} | Промокод: {promo_code if promo_code else 'Нет'}: {subject[:30]}")
+            await asyncio.sleep(3)
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки email-поста: {e}")
+
+async def run_email_radar():
+    while True:
+        try:
+            await check_emails()
+        except Exception as e:
+            print(f"⚠️ Ошибка почтового радара: {e}")
+        await asyncio.sleep(900)
+
 async def update_rates_loop():
     while True:
         await load_exchange_rates()
@@ -519,10 +657,11 @@ async def main():
     
     await load_exchange_rates()
     await start_web_server()
-    print("🚀 Глобальный радар и личный трекер запущены!")
+    print("🚀 Глобальный радар, трекер и почтовый радар запущены!")
     
     radar_std_task = asyncio.create_task(run_radar_standard())
     radar_reddit_task = asyncio.create_task(run_radar_reddit())
+    email_task = asyncio.create_task(run_email_radar())
     tracker_task = asyncio.create_task(check_personal_tracker())
     rates_task = asyncio.create_task(update_rates_loop())
     
@@ -532,6 +671,7 @@ async def main():
         print("🛑 Останавливаем бота...")
         radar_std_task.cancel()
         radar_reddit_task.cancel()
+        email_task.cancel()
         tracker_task.cancel()
         rates_task.cancel()
         await bot.session.close()
