@@ -47,7 +47,6 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
-# === ДОБАВЛЕН WOOT ===
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -73,7 +72,6 @@ EXCLUDE_STOP_WORDS = [
     "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
-# === WOOT ДОБАВЛЕН В ПОИСК SLICKDEALS ===
 STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+woot&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
@@ -522,8 +520,4 @@ def extract_promo_code_from_email(text: str):
         r'CODE[:\s]+([A-Z0-9]{4,15})',
         r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
     ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            code = match.group(1)
-            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED", "ERF
+    # Без
