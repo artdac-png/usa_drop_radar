@@ -31,7 +31,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
 
-# Данные для почты (UKR.NET)
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 
@@ -48,6 +47,7 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
+# === ДОБАВЛЕН WOOT ===
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -56,7 +56,8 @@ TARGET_BRANDS = [
     "asics", "salomon", "solomon", "saucony", "soucone", "mizuno", "hoka",
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf",
     "champs", "champs sports", "nordstrom", "nordstrom rack", "rack room", "rack room shoes",
-    "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance"
+    "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance",
+    "woot"
 ]
 
 EXCLUDE_STOP_WORDS = [
@@ -72,8 +73,9 @@ EXCLUDE_STOP_WORDS = [
     "expired", "dead deal", "sold out", "over", "ended", "no longer available"
 ]
 
+# === WOOT ДОБАВЛЕН В ПОИСК SLICKDEALS ===
 STANDARD_RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+woot&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
@@ -120,6 +122,7 @@ def find_matched_brand(text: str):
             if brand in ["champs", "champs sports"]: return "Champs Sports"
             if brand in ["nordstrom", "nordstrom rack"]: return "Nordstrom Rack"
             if brand in ["rack room", "rack room shoes"]: return "Rack Room Shoes"
+            if brand in ["woot"]: return "Woot"
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
@@ -145,36 +148,28 @@ async def load_exchange_rates():
 
 def format_price_multi(price_str: str) -> str:
     if not price_str or not EXCHANGE_RATES: return price_str
-    
     match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*([$£€])', price_str)
     if not match: return price_str
-        
     if match.group(1):
         symbol = match.group(1)
         amount_str = match.group(2)
     else:
         symbol = match.group(4)
         amount_str = match.group(3)
-        
     amount = float(amount_str.replace(',', '.'))
-    
     if symbol == "$": base = "USD"
     elif symbol == "£": base = "GBP"
     elif symbol == "€": base = "EUR"
     else: return price_str
-    
     if base == "USD": usd_amount = amount
     else: usd_amount = amount / EXCHANGE_RATES[base]
-        
     gbp_amount = usd_amount * EXCHANGE_RATES["GBP"]
     eur_amount = usd_amount * EXCHANGE_RATES["EUR"]
     uah_amount = usd_amount * EXCHANGE_RATES["UAH"]
-    
     parts = []
     if base != "USD": parts.append(f"${usd_amount:.2f}")
     if base != "GBP": parts.append(f"£{gbp_amount:.2f}")
     if base != "EUR": parts.append(f"€{eur_amount:.2f}")
-    
     other_currencies = " / ".join(parts)
     return f"{price_str} (~{other_currencies} / ~{int(uah_amount)} грн)"
 
@@ -210,16 +205,13 @@ def extract_hd_image(entry, summary: str) -> str:
     if hasattr(entry, 'media_content') and entry.media_content: url = entry.media_content[0]['url']
     elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail: url = entry.media_thumbnail[0]['url']
     elif hasattr(entry, 'enclosures') and entry.enclosures: url = entry.enclosures[0].get('href')
-
     raw_html = ""
     if hasattr(entry, 'content') and entry.content: raw_html += entry.content[0].value
     if summary: raw_html += " " + summary
-
     if not url:
         reddit_img_matches = re.findall(r'(https?://(?:i|preview|external-preview)\.redd\.it/[^\s"\'<>]+)', raw_html, re.IGNORECASE)
         if reddit_img_matches:
             url = reddit_img_matches[0].replace('&amp;', '&')
-
     if not url and raw_html:
         img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if img_matches:
@@ -395,7 +387,6 @@ async def check_personal_tracker():
                         brand_name = clean_markdown_text(item.get('brand') or "Одежда")
                         model_name = clean_markdown_text(item.get('title') or "Товар")
                         msg_text = f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n🏷 **Бренд:** {brand_name}\n📦 **Модель:** {model_name}\n💳 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
-                        
                         if item.get("image_url"):
                             try:
                                 await bot.send_photo(chat_id=item["user_id"], photo=item["image_url"], caption=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
@@ -403,7 +394,6 @@ async def check_personal_tracker():
                                 await bot.send_message(chat_id=item["user_id"], text=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
                         else:
                             await bot.send_message(chat_id=item["user_id"], text=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
-                            
                         supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).eq("user_id", item["user_id"]).execute()
         except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
         await asyncio.sleep(7200)
@@ -413,62 +403,48 @@ async def process_entry(entry, flag):
     main_link = entry.link
     deal_id = getattr(entry, 'id', main_link)
     summary = getattr(entry, 'summary', '')
-    
     brand = find_matched_brand(title)
     if not brand: return
-    
     if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: return
     if supabase.table("posted_deals").select("id").eq("title", title).execute().data: return
-        
     price = extract_price(title, summary)
     target_link = extract_best_link(summary, main_link)
     image_url = extract_hd_image(entry, summary)
-    
     try:
         async with AsyncSession() as s:
             resp = await s.get(target_link, impersonate="chrome", timeout=10)
             if resp.status_code == 200:
                 html_text = resp.text.lower()
-                
                 if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
                     print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
                     return
-                    
                 hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
-                if hd_match: 
+                if hd_match:
                     potential_img = hd_match.group(1)
                     if not any(bad_word in potential_img.lower() for bad_word in ['sale', 'banner', 'promo', 'kate-spade', 'off']):
                         image_url = potential_img
     except Exception as e:
         print(f"⚠️ Ошибка глубокой проверки: {e}")
-    
     price_with_multi = format_price_multi(price)
-
     kb_buttons = [[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]]
     if main_link and main_link != target_link:
         kb_buttons.append([InlineKeyboardButton(text="🔗 Источник / Обсуждение", url=main_link)])
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-
     clean_deal_title = clean_markdown_text(title)
-    
     post_text = (
         f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
         f"{flag}\n\n"
         f"**{clean_deal_title}**\n"
         f"💳 **Цена:** {price_with_multi}"
     )
-    
     try:
         if image_url:
             await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
         else:
             post_text_with_hidden_link = post_text + f"\n\n[​]({target_link})"
             await bot.send_message(chat_id=CHANNEL_ID, text=post_text_with_hidden_link, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-        
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
         print(f"[Channel Radar] {flag} {brand} ({price_with_multi}): {title[:30]}")
-        
         await asyncio.sleep(3)
     except Exception as e:
         print(f"⚠️ Ошибка поста: {e}")
@@ -483,7 +459,6 @@ async def fetch_feed(source):
 async def scan_and_post(sources):
     tasks = [fetch_feed(source) for source in sources]
     results = await asyncio.gather(*tasks)
-    
     for entries, flag in results:
         for entry in entries:
             await process_entry(entry, flag)
@@ -504,16 +479,12 @@ async def run_radar_reddit():
 def fetch_emails_sync():
     if not EMAIL_USER or not EMAIL_PASS:
         return []
-    
     emails_to_process = []
     try:
-        # Сервер для UKR.NET
         server = "imap.ukr.net"
-
         mail = imaplib.IMAP4_SSL(server)
         mail.login(EMAIL_USER, EMAIL_PASS)
         mail.select("inbox")
-        
         status, messages = mail.search(None, "UNSEEN")
         if status == "OK" and messages[0]:
             email_ids = messages[0].split()
@@ -522,13 +493,10 @@ def fetch_emails_sync():
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
                         msg = email.message_from_bytes(response_part[1])
-                        
                         subject, encoding = decode_header(msg["Subject"])[0]
                         if isinstance(subject, bytes):
                             subject = subject.decode(encoding if encoding else "utf-8")
-                            
                         sender = msg.get("From")
-                        
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -537,15 +505,11 @@ def fetch_emails_sync():
                                     break
                         else:
                             body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
-                            
                         emails_to_process.append({"subject": subject, "sender": sender, "body": body})
-                
                 mail.store(e_id, '+FLAGS', '\\Seen')
-                
         mail.logout()
     except Exception as e:
         print(f"⚠️ Ошибка IMAP почты: {e}")
-    
     return emails_to_process
 
 def extract_promo_code_from_email(text: str):
@@ -562,121 +526,4 @@ def extract_promo_code_from_email(text: str):
         match = re.search(pattern, text)
         if match:
             code = match.group(1)
-            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED", "ERFORDERLICH", "REQUIRED"]:
-                return code
-    return None
-
-async def check_emails():
-    if not EMAIL_USER or not EMAIL_PASS:
-        return
-        
-    print("📧 Проверяем почту на новые скидки...")
-    emails = await asyncio.to_thread(fetch_emails_sync)
-    
-    for email_data in emails:
-        subject = email_data["subject"]
-        sender = email_data["sender"]
-        body = email_data["body"]
-        
-        text_to_check = f"{subject} {sender}"
-        brand = find_matched_brand(text_to_check)
-        
-        promo_code = extract_promo_code_from_email(body)
-        if not brand and not promo_code:
-            continue
-            
-        if not brand: brand = "Shop Deal"
-        
-        email_id = hash(subject + sender)
-        if supabase.table("posted_deals").select("id").eq("deal_id", f"email_{email_id}").execute().data:
-            continue
-            
-        price = extract_price(subject, body)
-        image_url = extract_hd_image(type('obj', (object,), {'content': [type('obj', (object,), {'value': body})]}), body)
-        
-        price_with_multi = format_price_multi(price)
-        
-        kb_buttons = []
-        link_match = re.search(r'href=["\'](https?://[^"\']+)["\']', body)
-        if link_match:
-            kb_buttons.append([InlineKeyboardButton(text="🛒 Перейти к акции", url=link_match.group(1))])
-            
-        keyboard = InlineKeyboardMarkup(inline_keyboard=kb_buttons) if kb_buttons else None
-
-        clean_deal_title = clean_markdown_text(subject)
-        
-        post_text = (
-            f"**📧 EMAIL DEAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-            f"🌐 [Из рассылки]\n\n"
-            f"**{clean_deal_title}**\n"
-            f"💳 **Цена:** {price_with_multi}"
-        )
-        if promo_code:
-            post_text += f"\n🎟 **Промокод:** `{promo_code}`"
-            
-        try:
-            if image_url:
-                await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
-            else:
-                await bot.send_message(chat_id=CHANNEL_ID, text=post_text, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
-            
-            supabase.table("posted_deals").insert({"deal_id": f"email_{email_id}", "title": subject, "brand": brand}).execute()
-            print(f"[Email Radar] {brand} | Промокод: {promo_code if promo_code else 'Нет'}: {subject[:30]}")
-            await asyncio.sleep(3)
-        except Exception as e:
-            print(f"⚠️ Ошибка отправки email-поста: {e}")
-
-async def run_email_radar():
-    while True:
-        try:
-            await check_emails()
-        except Exception as e:
-            print(f"⚠️ Ошибка почтового радара: {e}")
-        await asyncio.sleep(900)
-
-async def update_rates_loop():
-    while True:
-        await load_exchange_rates()
-        await asyncio.sleep(43200)
-
-async def handle_ping(request):
-    return web.Response(text="Global & Personal Universal Scraping Live!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-async def main():
-    global http_session
-    http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
-    
-    await load_exchange_rates()
-    await start_web_server()
-    print("🚀 Глобальный радар, трекер и почтовый радар запущены!")
-    
-    radar_std_task = asyncio.create_task(run_radar_standard())
-    radar_reddit_task = asyncio.create_task(run_radar_reddit())
-    email_task = asyncio.create_task(run_email_radar())
-    tracker_task = asyncio.create_task(check_personal_tracker())
-    rates_task = asyncio.create_task(update_rates_loop())
-    
-    try:
-        await dp.start_polling(bot)
-    finally:
-        print("🛑 Останавливаем бота...")
-        radar_std_task.cancel()
-        radar_reddit_task.cancel()
-        email_task.cancel()
-        tracker_task.cancel()
-        rates_task.cancel()
-        await bot.session.close()
-        if http_session: await http_session.close()
-
-if __name__ == "__main__":
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): print("Бот успешно остановлен.")
+            if code not in ["SIZE", "SHIP", "ZIP", "FREE", "SAVE", "WORKS", "WORKING", "WORKED", "ERF
