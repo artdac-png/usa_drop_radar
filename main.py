@@ -515,9 +515,4 @@ def extract_promo_code_from_email(text: str):
     text = re.sub(r'<[^>]+>', ' ', text)
     text = html.unescape(text).upper()
     patterns = [
-        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15})',
-        r'USE\s*(?:PROMO\s*)?CODE[:\s]+([A-Z0-9]{4,15})',
-        r'CODE[:\s]+([A-Z0-9]{4,15})',
-        r'ПРОМОКОД[:\s]+([A-Z0-9]{4,15})'
-    ]
-    # Без
+        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15
