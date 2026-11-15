@@ -63,7 +63,9 @@ EXCLUDE_STOP_WORDS = [
     "kids", "toddler", "infant", "youth", "baby", "child", "children", 
     "boy", "boys", "boy's", "girl", "girls", "girl's",
     " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school",
-    "expired", "dead deal", "sold out", "over", "ended", "no longer available"
+    "expired", "dead deal", "sold out", "over", "ended", "no longer available",
+    # Исключаем мусор с Woot (не одежда/обувь)
+    "keyboard", "wagon", "cart", "gaming", "computer", "mouse", "monitor", "toy", "tools", "kitchen", "vacuum", "printer"
 ]
 
 STANDARD_RSS_SOURCES = [
