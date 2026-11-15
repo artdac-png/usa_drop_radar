@@ -2,9 +2,6 @@ import asyncio
 import os
 import re
 import html
-import imaplib
-import email
-from email.header import decode_header
 import feedparser
 import aiohttp
 from urllib.parse import urlparse
@@ -30,9 +27,6 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
-
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise RuntimeError("❌ Ошибка: Не заданы BOT_TOKEN, SUPABASE_URL или SUPABASE_KEY!")
@@ -473,46 +467,47 @@ async def run_radar_reddit():
         except Exception as e: print(f"⚠️ Ошибка Reddit-радара: {e}")
         await asyncio.sleep(300)
 
-# === МОДУЛЬ ЧТЕНИЯ ПОЧТЫ (UKR.NET) ===
-def fetch_emails_sync():
-    if not EMAIL_USER or not EMAIL_PASS:
-        return []
-    emails_to_process = []
-    try:
-        server = "imap.ukr.net"
-        mail = imaplib.IMAP4_SSL(server)
-        mail.login(EMAIL_USER, EMAIL_PASS)
-        mail.select("inbox")
-        status, messages = mail.search(None, "UNSEEN")
-        if status == "OK" and messages[0]:
-            email_ids = messages[0].split()
-            for e_id in email_ids:
-                _, msg_data = mail.fetch(e_id, "(RFC822)")
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        msg = email.message_from_bytes(response_part[1])
-                        subject, encoding = decode_header(msg["Subject"])[0]
-                        if isinstance(subject, bytes):
-                            subject = subject.decode(encoding if encoding else "utf-8")
-                        sender = msg.get("From")
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() == "text/html":
-                                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
-                                    break
-                        else:
-                            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
-                        emails_to_process.append({"subject": subject, "sender": sender, "body": body})
-                mail.store(e_id, '+FLAGS', '\\Seen')
-        mail.logout()
-    except Exception as e:
-        print(f"⚠️ Ошибка IMAP почты: {e}")
-    return emails_to_process
+async def update_rates_loop():
+    while True:
+        await load_exchange_rates()
+        await asyncio.sleep(43200)
 
-def extract_promo_code_from_email(text: str):
-    if not text: return None
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = html.unescape(text).upper()
-    patterns = [
-        r'(?:PROMO|COUPON|DISCOUNT|VOUCHER)\s*CODE[:\s]+([A-Z0-9]{4,15
+async def handle_ping(request):
+    return web.Response(text="Global & Personal Universal Scraping Live!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
+    global http_session
+    http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    
+    await load_exchange_rates()
+    await start_web_server()
+    print("🚀 Глобальный радар и личный трекер запущены!")
+    
+    radar_std_task = asyncio.create_task(run_radar_standard())
+    radar_reddit_task = asyncio.create_task(run_radar_reddit())
+    tracker_task = asyncio.create_task(check_personal_tracker())
+    rates_task = asyncio.create_task(update_rates_loop())
+    
+    try:
+        await dp.start_polling(bot)
+    finally:
+        print("🛑 Останавливаем бота...")
+        radar_std_task.cancel()
+        radar_reddit_task.cancel()
+        tracker_task.cancel()
+        rates_task.cancel()
+        await bot.session.close()
+        if http_session: await http_session.close()
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit): print("Бот успешно остановлен.")
