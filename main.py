@@ -41,6 +41,7 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
+# Вернули Woot, чтобы бот искал на нем интересные бренды
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -64,12 +65,14 @@ EXCLUDE_STOP_WORDS = [
     "boy", "boys", "boy's", "girl", "girls", "girl's",
     " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school",
     "expired", "dead deal", "sold out", "over", "ended", "no longer available",
-    # Исключаем мусор с Woot (не одежда/обувь)
-    "keyboard", "wagon", "cart", "gaming", "computer", "mouse", "monitor", "toy", "tools", "kitchen", "vacuum", "printer"
+    # Чистим Woot от мусора
+    "keyboard", "wagon", "cart", "gaming", "computer", "mouse", "toy", "tools", "kitchen", "vacuum", "printer",
+    "dehumidifier", "frigidaire", "air filter", "appliance", "heater", "cooler", "fridge", "refrigerator", "washing", "dryer", "microwave", "oven", "blender"
 ]
 
 STANDARD_RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+woot&rss=1"},
+    # Убрали Woot из поиска Slickdeals, чтобы не ловить мусор
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
