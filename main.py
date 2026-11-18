@@ -41,7 +41,6 @@ EXCHANGE_RATES = {}
 class TrackState(StatesGroup):
     waiting_for_url = State()
 
-# Вернули Woot, чтобы бот искал на нем интересные бренды
 TARGET_BRANDS = [
     "jordan", "nike", "adidas", "puma", "new balance", "under armour", "converse",
     "lacoste", "tommy hilfiger", "tommy", "calvin klein", "calvin", "guess", 
@@ -51,7 +50,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf",
     "champs", "champs sports", "nordstrom", "nordstrom rack", "rack room", "rack room shoes",
     "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance",
-    "woot"
+    "woot", "shoebacca" # <-- Добавили Shoebacca
 ]
 
 EXCLUDE_STOP_WORDS = [
@@ -65,14 +64,13 @@ EXCLUDE_STOP_WORDS = [
     "boy", "boys", "boy's", "girl", "girls", "girl's",
     " gs ", " gs,", "(gs)", " gs", "ps ", " ps", " td ", " td,", "preschool", "grade school",
     "expired", "dead deal", "sold out", "over", "ended", "no longer available",
-    # Чистим Woot от мусора
     "keyboard", "wagon", "cart", "gaming", "computer", "mouse", "toy", "tools", "kitchen", "vacuum", "printer",
     "dehumidifier", "frigidaire", "air filter", "appliance", "heater", "cooler", "fridge", "refrigerator", "washing", "dryer", "microwave", "oven", "blender"
 ]
 
 STANDARD_RSS_SOURCES = [
-    # Убрали Woot из поиска Slickdeals, чтобы не ловить мусор
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface&rss=1"},
+    # Добавили shoebacca в поиск Slickdeals
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
@@ -120,6 +118,7 @@ def find_matched_brand(text: str):
             if brand in ["nordstrom", "nordstrom rack"]: return "Nordstrom Rack"
             if brand in ["rack room", "rack room shoes"]: return "Rack Room Shoes"
             if brand in ["woot"]: return "Woot"
+            if brand in ["shoebacca"]: return "Shoebacca"
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
@@ -494,25 +493,4 @@ async def main():
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
     
     await load_exchange_rates()
-    await start_web_server()
-    print("🚀 Глобальный радар и личный трекер запущены!")
-    
-    radar_std_task = asyncio.create_task(run_radar_standard())
-    radar_reddit_task = asyncio.create_task(run_radar_reddit())
-    tracker_task = asyncio.create_task(check_personal_tracker())
-    rates_task = asyncio.create_task(update_rates_loop())
-    
-    try:
-        await dp.start_polling(bot)
-    finally:
-        print("🛑 Останавливаем бота...")
-        radar_std_task.cancel()
-        radar_reddit_task.cancel()
-        tracker_task.cancel()
-        rates_task.cancel()
-        await bot.session.close()
-        if http_session: await http_session.close()
-
-if __name__ == "__main__":
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): print("Бот успешно остановлен.")
+    await start_web_server
