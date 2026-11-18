@@ -1,27 +1,16 @@
-import asyncio
-import os
-import re
-import html
-import feedparser
-import aiohttp
+import asyncio, os, re, html, feedparser, aiohttp
 from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
-    ReplyKeyboardMarkup, 
-    KeyboardButton
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from aiohttp import web
 from curl_cffi.requests import AsyncSession
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -29,12 +18,11 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
-    raise RuntimeError("❌ Ошибка: Не заданы BOT_TOKEN, SUPABASE_URL или SUPABASE_KEY!")
+    raise RuntimeError("❌ Ошибка: Не заданы переменные окружения!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
 http_session: aiohttp.ClientSession = None
 EXCHANGE_RATES = {}
 
@@ -50,7 +38,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf",
     "champs", "champs sports", "nordstrom", "nordstrom rack", "rack room", "rack room shoes",
     "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance",
-    "woot", "shoebacca" # <-- Добавили Shoebacca
+    "woot", "shoebacca"
 ]
 
 EXCLUDE_STOP_WORDS = [
@@ -69,7 +57,6 @@ EXCLUDE_STOP_WORDS = [
 ]
 
 STANDARD_RSS_SOURCES = [
-    # Добавили shoebacca в поиск Slickdeals
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
@@ -133,32 +120,24 @@ async def load_exchange_rates():
                 if data.get("result") == "success":
                     rates = data["rates"]
                     EXCHANGE_RATES = {
-                        "USD": 1.0,
-                        "GBP": rates.get("GBP", 0.79),
-                        "EUR": rates.get("EUR", 0.92),
-                        "UAH": rates.get("UAH", 41.5)
+                        "USD": 1.0, "GBP": rates.get("GBP", 0.79),
+                        "EUR": rates.get("EUR", 0.92), "UAH": rates.get("UAH", 41.5)
                     }
                     print(f"💱 Курсы валют успешно обновлены.")
-    except Exception as e:
-        print(f"⚠️ Ошибка загрузки курсов валют: {e}")
+    except Exception as e: print(f"⚠️ Ошибка курсов: {e}")
 
 def format_price_multi(price_str: str) -> str:
     if not price_str or not EXCHANGE_RATES: return price_str
     match = re.search(r'([$£€])\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*([$£€])', price_str)
     if not match: return price_str
-    if match.group(1):
-        symbol = match.group(1)
-        amount_str = match.group(2)
-    else:
-        symbol = match.group(4)
-        amount_str = match.group(3)
+    symbol = match.group(1) if match.group(1) else match.group(4)
+    amount_str = match.group(2) if match.group(1) else match.group(3)
     amount = float(amount_str.replace(',', '.'))
     if symbol == "$": base = "USD"
     elif symbol == "£": base = "GBP"
     elif symbol == "€": base = "EUR"
     else: return price_str
-    if base == "USD": usd_amount = amount
-    else: usd_amount = amount / EXCHANGE_RATES[base]
+    usd_amount = amount if base == "USD" else amount / EXCHANGE_RATES[base]
     gbp_amount = usd_amount * EXCHANGE_RATES["GBP"]
     eur_amount = usd_amount * EXCHANGE_RATES["EUR"]
     uah_amount = usd_amount * EXCHANGE_RATES["UAH"]
@@ -166,8 +145,7 @@ def format_price_multi(price_str: str) -> str:
     if base != "USD": parts.append(f"${usd_amount:.2f}")
     if base != "GBP": parts.append(f"£{gbp_amount:.2f}")
     if base != "EUR": parts.append(f"€{eur_amount:.2f}")
-    other_currencies = " / ".join(parts)
-    return f"{price_str} (~{other_currencies} / ~{int(uah_amount)} грн)"
+    return f"{price_str} (~{' / '.join(parts)} / ~{int(uah_amount)} грн)"
 
 def extract_price(title: str, summary: str) -> str:
     text = f"{title} {summary}"
@@ -206,8 +184,7 @@ def extract_hd_image(entry, summary: str) -> str:
     if summary: raw_html += " " + summary
     if not url:
         reddit_img_matches = re.findall(r'(https?://(?:i|preview|external-preview)\.redd\.it/[^\s"\'<>]+)', raw_html, re.IGNORECASE)
-        if reddit_img_matches:
-            url = reddit_img_matches[0].replace('&amp;', '&')
+        if reddit_img_matches: url = reddit_img_matches[0].replace('&amp;', '&')
     if not url and raw_html:
         img_matches = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', raw_html, re.IGNORECASE)
         if img_matches:
@@ -240,23 +217,18 @@ def extract_levis_image(url: str) -> str:
     return None
 
 async def fetch_product_data(url: str):
-    price = "🔥 СМОТРЕТЬ НА САЙТЕ"
-    image_url = extract_levis_image(url) if "levi.com" in url else None
-    parsed_title = None
-    parsed_brand = None
+    price, image_url, parsed_title, parsed_brand = "🔥 СМОТРЕТЬ НА САЙТЕ", (extract_levis_image(url) if "levi.com" in url else None), None, None
     try:
         async with AsyncSession() as s:
             resp = await s.get(url, impersonate="chrome", timeout=15)
-            html_text = resp.text
             if resp.status_code == 200:
-                title_match = re.search(r'property="og:title"\s+content="([^"]+)"', html_text, re.IGNORECASE) or re.search(r'<title>([^<]+)</title>', html_text, re.IGNORECASE)
+                title_match = re.search(r'property="og:title"\s+content="([^"]+)"', resp.text, re.IGNORECASE) or re.search(r'<title>([^<]+)</title>', resp.text, re.IGNORECASE)
                 if title_match: parsed_title = title_match.group(1).strip()
-                img_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
+                img_match = re.search(r'property="og:image"\s+content="([^"]+)"', resp.text, re.IGNORECASE)
                 if img_match: image_url = img_match.group(1).strip()
-                price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', html_text, re.IGNORECASE) or re.search(r'itemprop="price"\s+content="(\d+(?:\.\d{2})?)"', html_text, re.IGNORECASE)
+                price_match = re.search(r'"price"\s*:\s*"?(\d+(?:\.\d{2})?)"?', resp.text, re.IGNORECASE) or re.search(r'itemprop="price"\s+content="(\d+(?:\.\d{2})?)"', resp.text, re.IGNORECASE)
                 if price_match: price = f"${price_match.group(1)}"
     except Exception as e: print(f"⚠️ Ошибка curl_cffi: {e}")
-
     if price == "🔥 СМОТРЕТЬ НА САЙТЕ" and GAS_PROXY_URL:
         try:
             async with aiohttp.ClientSession() as session:
@@ -269,107 +241,75 @@ async def fetch_product_data(url: str):
                             if data.get("title") and "error" not in data.get("title").lower(): parsed_title = data.get("title")
                             if data.get("brand"): parsed_brand = data.get("brand")
         except Exception: pass
-
-    if parsed_title:
-        bad_words = ["oops", "error", "access denied", "not found", "forbidden", "something went wrong"]
-        if any(word in parsed_title.lower() for word in bad_words):
-            parsed_title = None; image_url = None
+    if parsed_title and any(word in parsed_title.lower() for word in ["oops", "error", "access denied", "not found", "forbidden"]):
+        parsed_title, image_url = None, None
     return price, image_url, parsed_title, parsed_brand
 
 def get_main_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")]
-        ],
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")]], resize_keyboard=True)
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("👋 Привет! Я твой персональный радар и трекер скидок.\n\nВыбери действие на клавиатуре:", reply_markup=get_main_keyboard())
+    await message.answer("👋 Привет! Я твой радар скидок.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "➕ Добавить ссылку")
 @dp.message(Command("track"))
 async def start_tracking_flow(message: types.Message, state: FSMContext):
     await state.set_state(TrackState.waiting_for_url)
-    await message.answer("🔗 **Отправь мне ссылку на вещь**, цену которой ты хочешь отслеживать:", parse_mode="Markdown")
+    await message.answer("🔗 **Отправь мне ссылку на вещь**:", parse_mode="Markdown")
 
 @dp.message(TrackState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку"}))
 async def process_track_url(message: types.Message, state: FSMContext):
     url = message.text.strip()
     if not url.startswith("http"):
-        await message.answer("⚠️ Это не похоже на правильную ссылку. Попробуй ещё раз:")
+        await message.answer("⚠️ Это не ссылка.")
         return
-
-    user_id = message.from_user.id
-    await message.answer("⏳ Сканирую карточку товара...")
-    fallback_title = extract_title_from_url(url)
+    await message.answer("⏳ Сканирую...")
     price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
-
-    raw_name = parsed_title or fallback_title
-    title = clean_markdown_text(raw_name)
+    title = clean_markdown_text(parsed_title or extract_title_from_url(url))
     brand = parsed_brand or find_matched_brand(title) or find_matched_brand(url) or "Брендовая вещь"
-
     try:
-        res = supabase.table("tracked_items").insert({
-            "user_id": user_id, "url": url, "brand": brand, "title": title, "last_price": price, "image_url": image_url
-        }).execute()
+        res = supabase.table("tracked_items").insert({"user_id": message.from_user.id, "url": url, "brand": brand, "title": title, "last_price": price, "image_url": image_url}).execute()
         if not res.data:
-            await message.answer("⚠️ Не удалось сохранить товар в базу.")
+            await message.answer("⚠️ Ошибка сохранения.")
             await state.clear()
             return
     except Exception as e:
-        print(f"DB error: {e}")
-        await message.answer("⚠️ Ошибка базы данных.")
-        await state.clear()
-        return
-
+        print(f"DB error: {e}"); await message.answer("⚠️ Ошибка БД."); await state.clear(); return
     await state.clear()
-    caption_text = f"✅ **Товар сохранен!**\n\n🏷 **Бренд:** {brand}\n📦 **Модель:** {title}\n💳 **Текущая цена:** `{price}`\n\nЯ напишу тебе в ЛС, как только цена изменится!"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Открыть товар на сайте", url=url)]])
-
+    caption = f"✅ **Сохранено!**\n\n🏷 **Бренд:** {brand}\n📦 **Модель:** {title}\n💳 **Цена:** `{price}`"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Открыть", url=url)]])
     if image_url:
         try:
-            await message.answer_photo(photo=image_url, caption=caption_text, parse_mode="Markdown", reply_markup=keyboard)
+            await message.answer_photo(photo=image_url, caption=caption, parse_mode="Markdown", reply_markup=kb)
             return
-        except Exception as e:
-            print(f"Photo error: {e}")
-    await message.answer(caption_text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception: pass
+    await message.answer(caption, parse_mode="Markdown", reply_markup=kb)
 
 @dp.message(F.text == "📋 Мой список")
 @dp.message(Command("list"))
 async def show_tracked_list(message: types.Message):
-    user_id = message.from_user.id
-    res = supabase.table("tracked_items").select("*").eq("user_id", user_id).execute()
+    res = supabase.table("tracked_items").select("*").eq("user_id", message.from_user.id).execute()
     if not res.data:
-        await message.answer("📭 У тебя пока нет товаров на отслеживании.", reply_markup=get_main_keyboard())
+        await message.answer("📭 Список пуст.", reply_markup=get_main_keyboard())
         return
-    await message.answer("📋 **Твои отслеживаемые товары:**", parse_mode="Markdown")
+    await message.answer("📋 **Твои товары:**", parse_mode="Markdown")
     for item in res.data:
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🛒 Перейти к товару", url=item["url"]),
-            InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item['id']}")
-        ]])
-        brand_name = clean_markdown_text(item.get('brand') or "Одежда")
-        model_name = clean_markdown_text(item.get('title') or "Товар")
-        caption_text = f"🏷 **Бренд:** {brand_name}\n📦 **Модель:** {model_name}\n💳 Цена: `{item['last_price']}`"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Перейти", url=item["url"]), InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item['id']}")]])
+        caption = f"🏷 **Бренд:** {clean_markdown_text(item.get('brand') or 'Одежда')}\n📦 **Модель:** {clean_markdown_text(item.get('title') or 'Товар')}\n💳 Цена: `{item['last_price']}`"
         if item.get("image_url"):
             try:
-                await message.answer_photo(photo=item.get("image_url"), caption=caption_text, parse_mode="Markdown", reply_markup=inline_kb)
+                await message.answer_photo(photo=item["image_url"], caption=caption, parse_mode="Markdown", reply_markup=kb)
                 continue
             except Exception: pass
-        await message.answer(caption_text, parse_mode="Markdown", reply_markup=inline_kb)
+        await message.answer(caption, parse_mode="Markdown", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_tracked_item(callback: types.CallbackQuery):
-    item_id = callback.data.split("_", 1)[1]
-    res = supabase.table("tracked_items").delete().eq("id", item_id).eq("user_id", callback.from_user.id).execute()
-    if not res.data:
-        await callback.answer("❌ Товар не найден или нет прав на удаление.", show_alert=True)
-        return
-    await callback.answer("Товар удален!")
-    await callback.message.delete()
+    res = supabase.table("tracked_items").delete().eq("id", callback.data.split("_", 1)[1]).eq("user_id", callback.from_user.id).execute()
+    if not res.data: await callback.answer("❌ Нет прав.", show_alert=True); return
+    await callback.answer("Удалено!"); await callback.message.delete()
 
 async def check_personal_tracker():
     while True:
@@ -379,96 +319,64 @@ async def check_personal_tracker():
                 for item in res.data:
                     new_price, _, _, _ = await fetch_product_data(item["url"])
                     if new_price != "🔥 СМОТРЕТЬ НА САЙТЕ" and new_price != item["last_price"]:
-                        inline_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ СЕЙЧАС", url=item["url"])]])
-                        brand_name = clean_markdown_text(item.get('brand') or "Одежда")
-                        model_name = clean_markdown_text(item.get('title') or "Товар")
-                        msg_text = f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n🏷 **Бренд:** {brand_name}\n📦 **Модель:** {model_name}\n💳 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
-                        if item.get("image_url"):
-                            try:
-                                await bot.send_photo(chat_id=item["user_id"], photo=item["image_url"], caption=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
-                            except Exception:
-                                await bot.send_message(chat_id=item["user_id"], text=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
-                        else:
-                            await bot.send_message(chat_id=item["user_id"], text=msg_text, parse_mode="Markdown", reply_markup=inline_kb)
-                        supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).eq("user_id", item["user_id"]).execute()
-        except Exception as e: print(f"⚠️ Ошибка трекера: {e}")
+                        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ", url=item["url"])]])
+                        msg = f"🔔 **ЦЕНА ИЗМЕНИЛАСЬ!**\n\n🏷 {clean_markdown_text(item.get('brand'))}\n📦 {clean_markdown_text(item.get('title'))}\n💳 **Было:** `{item['last_price']}` ➡️ **Стало:** `{new_price}`"
+                        try:
+                            if item.get("image_url"): await bot.send_photo(chat_id=item["user_id"], photo=item["image_url"], caption=msg, parse_mode="Markdown", reply_markup=kb)
+                            else: await bot.send_message(chat_id=item["user_id"], text=msg, parse_mode="Markdown", reply_markup=kb)
+                        except Exception: pass
+                        supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
+        except Exception as e: print(f"⚠️ Трекер: {e}")
         await asyncio.sleep(7200)
 
 async def process_entry(entry, flag):
-    title = entry.title.strip()
-    main_link = entry.link
-    deal_id = getattr(entry, 'id', main_link)
-    summary = getattr(entry, 'summary', '')
+    title, main_link, summary = entry.title.strip(), entry.link, getattr(entry, 'summary', '')
     brand = find_matched_brand(title)
     if not brand: return
+    deal_id = getattr(entry, 'id', main_link)
     if supabase.table("posted_deals").select("id").eq("deal_id", deal_id).execute().data: return
     if supabase.table("posted_deals").select("id").eq("title", title).execute().data: return
-    price = extract_price(title, summary)
-    target_link = extract_best_link(summary, main_link)
-    image_url = extract_hd_image(entry, summary)
+    price, target_link, image_url = extract_price(title, summary), extract_best_link(summary, main_link), extract_hd_image(entry, summary)
     try:
         async with AsyncSession() as s:
             resp = await s.get(target_link, impersonate="chrome", timeout=10)
             if resp.status_code == 200:
                 html_text = resp.text.lower()
-                if any(word in html_text for word in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']):
-                    print(f"⏩ Пропуск (нет в наличии): {title[:30]}")
-                    return
+                if any(w in html_text for w in ['"availability":"outofstock"', 'sold out', 'out of stock', 'нет в наличии']): return
                 hd_match = re.search(r'property="og:image"\s+content="([^"]+)"', html_text, re.IGNORECASE)
-                if hd_match:
-                    potential_img = hd_match.group(1)
-                    if not any(bad_word in potential_img.lower() for bad_word in ['sale', 'banner', 'promo', 'kate-spade', 'off']):
-                        image_url = potential_img
-    except Exception as e:
-        print(f"⚠️ Ошибка глубокой проверки: {e}")
+                if hd_match and not any(bw in hd_match.group(1).lower() for bw in ['sale', 'banner', 'promo', 'off']): image_url = hd_match.group(1)
+    except Exception: pass
     price_with_multi = format_price_multi(price)
-    kb_buttons = [[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]]
-    if main_link and main_link != target_link:
-        kb_buttons.append([InlineKeyboardButton(text="🔗 Источник / Обсуждение", url=main_link)])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    clean_deal_title = clean_markdown_text(title)
-    post_text = (
-        f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n"
-        f"{flag}\n\n"
-        f"**{clean_deal_title}**\n"
-        f"💳 **Цена:** {price_with_multi}"
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]] + ([[InlineKeyboardButton(text="🔗 Источник", url=main_link)]] if main_link != target_link else []))
+    post_text = f"**DROP SIGNAL | #{brand.upper().replace('&', '').replace(' ', '')}**\n{flag}\n\n**{clean_markdown_text(title)}**\n💳 **Цена:** {price_with_multi}"
     try:
-        if image_url:
-            await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=keyboard)
-        else:
-            post_text_with_hidden_link = post_text + f"\n\n[​]({target_link})"
-            await bot.send_message(chat_id=CHANNEL_ID, text=post_text_with_hidden_link, parse_mode="Markdown", disable_web_page_preview=False, reply_markup=keyboard)
+        if image_url: await bot.send_photo(chat_id=CHANNEL_ID, photo=image_url, caption=post_text, parse_mode="Markdown", reply_markup=kb)
+        else: await bot.send_message(chat_id=CHANNEL_ID, text=post_text + f"\n\n[​]({target_link})", parse_mode="Markdown", disable_web_page_preview=False, reply_markup=kb)
         supabase.table("posted_deals").insert({"deal_id": deal_id, "title": title, "brand": brand}).execute()
-        print(f"[Channel Radar] {flag} {brand} ({price_with_multi}): {title[:30]}")
         await asyncio.sleep(3)
-    except Exception as e:
-        print(f"⚠️ Ошибка поста: {e}")
+    except Exception as e: print(f"⚠️ Пост: {e}")
 
 async def fetch_feed(source):
     try:
         feed = await asyncio.to_thread(feedparser.parse, source["url"])
         return feed.entries, source["flag"]
-    except Exception as e:
-        return [], source["flag"]
+    except Exception: return [], source["flag"]
 
 async def scan_and_post(sources):
-    tasks = [fetch_feed(source) for source in sources]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*[fetch_feed(source) for source in sources])
     for entries, flag in results:
-        for entry in entries:
-            await process_entry(entry, flag)
+        for entry in entries: await process_entry(entry, flag)
 
 async def run_radar_standard():
     while True:
         try: await scan_and_post(STANDARD_RSS_SOURCES)
-        except Exception as e: print(f"⚠️ Ошибка стандартного радара: {e}")
+        except Exception as e: print(f"⚠️ Радар: {e}")
         await asyncio.sleep(180)
 
 async def run_radar_reddit():
     while True:
         try: await scan_and_post(REDDIT_RSS_SOURCES)
-        except Exception as e: print(f"⚠️ Ошибка Reddit-радара: {e}")
+        except Exception as e: print(f"⚠️ Reddit: {e}")
         await asyncio.sleep(300)
 
 async def update_rates_loop():
@@ -476,21 +384,25 @@ async def update_rates_loop():
         await load_exchange_rates()
         await asyncio.sleep(43200)
 
-async def handle_ping(request):
-    return web.Response(text="Global & Personal Universal Scraping Live!")
+async def handle_ping(request): return web.Response(text="Live!")
 
 async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
+    app = web.Application(); app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app); await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))); await site.start()
 
 async def main():
     global http_session
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
-    
-    await load_exchange_rates()
-    await start_web_server
+    await load_exchange_rates(); await start_web_server()
+    print("🚀 Бот запущен!")
+    tasks = [asyncio.create_task(run_radar_standard()), asyncio.create_task(run_radar_reddit()), asyncio.create_task(check_personal_tracker()), asyncio.create_task(update_rates_loop())]
+    try: await dp.start_polling(bot)
+    finally:
+        for t in tasks: t.cancel()
+        await bot.session.close()
+        if http_session: await http_session.close()
+
+if __name__ == "__main__":
+    try: asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit): print("Бот остановлен.")
