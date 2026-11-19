@@ -38,7 +38,7 @@ TARGET_BRANDS = [
     "on running", "onrunning", "on-running", "the north face", "north face", "tnf",
     "champs", "champs sports", "nordstrom", "nordstrom rack", "rack room", "rack room shoes",
     "footlocker", "jd sports", "zappos", "asos", "mandm", "shop simon", "joes new balance",
-    "woot", "shoebacca"
+    "woot", "shoebacca", "macy's", "macys", "gap", "old navy"
 ]
 
 EXCLUDE_STOP_WORDS = [
@@ -57,7 +57,7 @@ EXCLUDE_STOP_WORDS = [
 ]
 
 STANDARD_RSS_SOURCES = [
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca+macys+gap+oldnavy&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
@@ -106,6 +106,9 @@ def find_matched_brand(text: str):
             if brand in ["rack room", "rack room shoes"]: return "Rack Room Shoes"
             if brand in ["woot"]: return "Woot"
             if brand in ["shoebacca"]: return "Shoebacca"
+            if brand in ["macy's", "macys"]: return "Macy's"
+            if brand in ["gap"]: return "Gap"
+            if brand in ["old navy"]: return "Old Navy"
             return brand.title()
     if "calvin" in text_lower or "calvinklein" in text_lower: return "Calvin Klein"
     if "levi.com" in text_lower or "levi" in text_lower: return "Levi's"
