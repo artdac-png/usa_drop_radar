@@ -330,7 +330,7 @@ async def check_personal_tracker():
                         except Exception: pass
                         supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
         except Exception as e: print(f"⚠️ Трекер: {e}")
-        await asyncio.sleep(7200)
+        await asyncio.sleep(10000)
 
 async def process_entry(entry, flag):
     title, main_link, summary = entry.title.strip(), entry.link, getattr(entry, 'summary', '')
@@ -374,13 +374,13 @@ async def run_radar_standard():
     while True:
         try: await scan_and_post(STANDARD_RSS_SOURCES)
         except Exception as e: print(f"⚠️ Радар: {e}")
-        await asyncio.sleep(180)
+        await asyncio.sleep(600)
 
 async def run_radar_reddit():
     while True:
         try: await scan_and_post(REDDIT_RSS_SOURCES)
         except Exception as e: print(f"⚠️ Reddit: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(900)
 
 async def update_rates_loop():
     while True:
