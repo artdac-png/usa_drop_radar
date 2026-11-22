@@ -1,0 +1,61 @@
+name: Deploy to Oracle Cloud
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy secrets
+        id: check
+        env:
+          OCI_HOST: ${{ secrets.OCI_HOST }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
+        run: |
+          if [ -z "$OCI_HOST" ] || [ -z "$OCI_USER" ] || [ -z "$OCI_SSH_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Секреты OCI_HOST / OCI_USER / OCI_SSH_KEY не заданы. Автодеплой пропущен."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy via SSH
+        if: steps.check.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.OCI_HOST }}
+          username: ${{ secrets.OCI_USER }}
+          key: ${{ secrets.OCI_SSH_KEY }}
+          port: ${{ secrets.OCI_PORT || 22 }}
+          envs: OCI_APP_DIR,OCI_SERVICE_NAME
+          script: |
+            set -e
+            APP_DIR="${OCI_APP_DIR:-$HOME/usa_drop_radar}"
+            SERVICE_NAME="${OCI_SERVICE_NAME:-usa_drop_radar}"
+
+            cd "$APP_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+
+            if [ -d "venv" ]; then
+              ./venv/bin/pip install -r requirements.txt -q
+            elif [ -d ".venv" ]; then
+              ./.venv/bin/pip install -r requirements.txt -q
+            else
+              pip3 install -r requirements.txt -q
+            fi
+
+            if systemctl list-unit-files | grep -q "^${SERVICE_NAME}.service"; then
+              sudo systemctl restart "$SERVICE_NAME"
+              sudo systemctl status "$SERVICE_NAME" --no-pager -l | head -n 15
+            else
+              echo "⚠️ systemd-сервис ${SERVICE_NAME}.service не найден."
+              exit 1
+            fi
+        env:
+          OCI_APP_DIR: ${{ secrets.OCI_APP_DIR }}
+          OCI_SERVICE_NAME: ${{ secrets.OCI_SERVICE_NAME }}
