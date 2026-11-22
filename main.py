@@ -7,12 +7,17 @@ import logging
 import os
 import re
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.header import decode_header
 from email.message import Message
 from urllib.parse import parse_qs, urljoin, urlparse
+try:
+    from zoneinfo import ZoneInfo
+    KYIV_TZ = ZoneInfo("Europe/Kyiv")
+except Exception:
+    KYIV_TZ = timezone(timedelta(hours=2))
 
 import aiohttp
 import feedparser
@@ -87,6 +92,12 @@ ACTIVE_STORE_PROMOS: dict[str, dict] = {}
 NOTIFIED_PROMOS: set[tuple[int, str, str]] = set()
 PENDING_EMAIL_PROMOS: dict[str, dict] = {}
 EMAIL_PROMO_SEQ = 0
+BOT_START_TS = time.time()
+LAST_DIGEST_DATE: str | None = None
+
+QUIET_START_HOUR = int(os.getenv("QUIET_START_HOUR", "23"))
+QUIET_END_HOUR = int(os.getenv("QUIET_END_HOUR", "8"))
+DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "20"))
 
 EMAIL_SERVICE_STOP_WORDS = (
     "order confirmation", "your order", "has shipped", "out for delivery",
@@ -502,6 +513,83 @@ def extract_page_promo(page_html: str) -> dict | None:
     return None
 
 
+def is_quiet_hours() -> bool:
+    """Return True during Kyiv night quiet hours (default 23:00–08:00)."""
+    hour = datetime.now(KYIV_TZ).hour
+    if QUIET_START_HOUR > QUIET_END_HOUR:
+        return hour >= QUIET_START_HOUR or hour < QUIET_END_HOUR
+    return QUIET_START_HOUR <= hour < QUIET_END_HOUR
+
+
+async def load_active_promos_from_db() -> None:
+    """Load non-expired store promos from Supabase on startup so promos survive restarts without re-notifying."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await db_exec(
+            lambda: supabase.table("active_promos").select("*").gt("expires_at", now_iso).execute()
+        )
+        loaded = 0
+        for row in res.data or []:
+            key = (row.get("brand") or "").strip().lower()
+            code = (row.get("code") or "").strip().upper()
+            if not key or not code:
+                continue
+            exp_ts = time.time() + PROMO_TTL_SECONDS
+            try:
+                exp_dt = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+                exp_ts = exp_dt.timestamp()
+            except Exception:
+                pass
+            ACTIVE_STORE_PROMOS[key] = {
+                "code": code,
+                "pct": row.get("pct"),
+                "fixed": row.get("fixed"),
+                "fixed_cur": row.get("fixed_cur"),
+                "source": row.get("source") or "DB",
+                "ts": exp_ts - PROMO_TTL_SECONDS,
+            }
+            loaded += 1
+        if loaded:
+            logger.info("🎟 Загружено %d активных промокодов из Supabase.", loaded)
+    except Exception as e:
+        logger.debug("active_promos load skipped (table may not exist yet): %s", e)
+
+
+def _schedule_promo_persist(brand_key: str, promo: dict) -> None:
+    async def _save():
+        try:
+            expires_iso = datetime.fromtimestamp(promo["ts"] + PROMO_TTL_SECONDS, tz=timezone.utc).isoformat()
+            await db_exec(
+                lambda: supabase.table("active_promos")
+                .upsert({
+                    "brand": brand_key,
+                    "code": promo["code"],
+                    "pct": promo.get("pct"),
+                    "fixed": promo.get("fixed"),
+                    "fixed_cur": promo.get("fixed_cur"),
+                    "source": promo.get("source") or "RSS",
+                    "expires_at": expires_iso,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }, on_conflict="brand")
+                .execute()
+            )
+        except Exception as e:
+            logger.debug("active_promos save skipped: %s", e)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_save())
+    except RuntimeError:
+        pass
+
+
+async def delete_promo_from_db(brand_key: str) -> None:
+    try:
+        await db_exec(lambda: supabase.table("active_promos").delete().eq("brand", brand_key).execute())
+    except Exception:
+        pass
+
+
 def register_store_promo(
     brand: str,
     code: str,
@@ -520,13 +608,14 @@ def register_store_promo(
         if existing["code"] == code:
             if pct and (not existing.get("pct") or pct > existing["pct"]):
                 existing["pct"] = pct
+                _schedule_promo_persist(key, existing)
             existing["ts"] = now
             return False
         # Keep the better percentage discount if another code is already active today
         if existing.get("pct") and pct and pct < existing["pct"]:
             return False
 
-    ACTIVE_STORE_PROMOS[key] = {
+    promo = {
         "code": code,
         "pct": pct,
         "fixed": fixed,
@@ -534,6 +623,8 @@ def register_store_promo(
         "source": source,
         "ts": now,
     }
+    ACTIVE_STORE_PROMOS[key] = promo
+    _schedule_promo_persist(key, promo)
     return True
 
 
@@ -1152,6 +1243,7 @@ async def send_photo_or_text(
     image_url: str | None = None,
     reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
     disable_web_page_preview: bool = True,
+    disable_notification: bool = False,
 ) -> bool:
     if image_url:
         caption = text if len(text) <= 1024 else text[:1020] + "..."
@@ -1161,6 +1253,7 @@ async def send_photo_or_text(
                 photo=image_url,
                 caption=caption,
                 reply_markup=reply_markup,
+                disable_notification=disable_notification,
             )
             return True
         except Exception as e:
@@ -1172,6 +1265,7 @@ async def send_photo_or_text(
         text=safe_text,
         reply_markup=reply_markup,
         disable_web_page_preview=disable_web_page_preview,
+        disable_notification=disable_notification,
     )
     return True
 
@@ -1374,6 +1468,8 @@ async def cmd_help(message: types.Message, state: FSMContext):
         "• /checkall или <b>🔄 Проверить всё</b> — проверить все товары сразу\n"
         "• /promo — сегодняшние промокоды (можно задать вручную: <code>/promo nike BFRIDAY 25</code>)\n"
         "• /checkmail — проверить новые письма с промокодами на почте\n"
+        "• /stats — статистика канала, источников и бота\n"
+        "• /digest — предпросмотр дайджеста «Топ-5 дропов дня» (или <code>/digest post</code> в канал)\n"
         "• /alert <code>слово</code> или <b>🔔 Алерты</b> — личные уведомления по ключевым словам\n"
         "• /search <code>nike</code> или <b>🔍 Поиск</b> — поиск по последним найденным дропам\n"
         "• /rates или <b>💱 Курсы валют</b> — актуальные курсы валют\n"
@@ -1407,7 +1503,9 @@ async def cmd_promo(message: types.Message, state: FSMContext):
     if parts[1].lower() == "del" and len(parts) >= 3:
         brand_name = " ".join(parts[2:]).strip().lower()
         canonical = (find_matched_brand(brand_name) or brand_name).lower()
-        if ACTIVE_STORE_PROMOS.pop(canonical, None) or ACTIVE_STORE_PROMOS.pop(brand_name, None):
+        removed = ACTIVE_STORE_PROMOS.pop(canonical, None) or ACTIVE_STORE_PROMOS.pop(brand_name, None)
+        await delete_promo_from_db(canonical)
+        if removed:
             await message.answer(f"🗑 Промокод для <b>{esc(brand_name.title())}</b> удалён.", reply_markup=get_main_keyboard())
         else:
             await message.answer("⚠️ Для этого бренда нет активного промокода.", reply_markup=get_main_keyboard())
@@ -1427,7 +1525,7 @@ async def cmd_promo(message: types.Message, state: FSMContext):
             await message.answer("⚠️ Формат: <code>/promo nike BFRIDAY 25</code>", reply_markup=get_main_keyboard())
             return
         canonical = find_matched_brand(brand_raw) or brand_raw.title()
-        ACTIVE_STORE_PROMOS[canonical.lower()] = {
+        promo_obj = {
             "code": code,
             "pct": pct,
             "fixed": None,
@@ -1435,6 +1533,8 @@ async def cmd_promo(message: types.Message, state: FSMContext):
             "source": "вручную",
             "ts": time.time(),
         }
+        ACTIVE_STORE_PROMOS[canonical.lower()] = promo_obj
+        _schedule_promo_persist(canonical.lower(), promo_obj)
         disc = f" (-{pct}%)" if pct else ""
         await message.answer(
             f"✅ Промокод сохранён: <b>{esc(canonical)}</b> → <code>{esc(code)}</code>{disc}\n"
@@ -2247,15 +2347,29 @@ async def process_entry(entry, flag: str):
         try:
             ins = await db_exec(
                 lambda: supabase.table("posted_deals")
-                .insert({"deal_id": deal_id, "title": title, "brand": brand, "price": price, "url": target_link})
+                .insert({
+                    "deal_id": deal_id,
+                    "title": title,
+                    "brand": brand,
+                    "price": price,
+                    "url": target_link,
+                    "discount_pct": effective_discount,
+                })
                 .execute()
             )
         except Exception:
-            ins = await db_exec(
-                lambda: supabase.table("posted_deals")
-                .insert({"deal_id": deal_id, "title": title, "brand": brand})
-                .execute()
-            )
+            try:
+                ins = await db_exec(
+                    lambda: supabase.table("posted_deals")
+                    .insert({"deal_id": deal_id, "title": title, "brand": brand, "price": price, "url": target_link})
+                    .execute()
+                )
+            except Exception:
+                ins = await db_exec(
+                    lambda: supabase.table("posted_deals")
+                    .insert({"deal_id": deal_id, "title": title, "brand": brand})
+                    .execute()
+                )
         if ins.data:
             deal_row_id = ins.data[0].get("id")
     except Exception as e:
@@ -2296,6 +2410,7 @@ async def process_entry(entry, flag: str):
             image_url=image_url,
             reply_markup=kb,
             disable_web_page_preview=False,
+            disable_notification=is_quiet_hours(),
         )
         remember_deal(deal_id, title)
         logger.info("✅ Опубликован дроп: [%s] %s", brand, title[:80])
@@ -2703,6 +2818,179 @@ async def run_email_watcher():
         await asyncio.sleep(EMAIL_CHECK_INTERVAL)
 
 
+def _source_name_from_deal_id(deal_id: str | None) -> str:
+    if not deal_id:
+        return "Другие"
+    low = deal_id.lower()
+    mapping = [
+        ("slickdeals", "Slickdeals"),
+        ("dealnews", "DealNews"),
+        ("sneakersteal", "SneakerSteal"),
+        ("mydealz", "MyDealz (DE)"),
+        ("hotukdeals", "HotUKDeals (UK)"),
+        ("chollometro", "Chollometro (ES)"),
+        ("dealabs", "Dealabs (FR)"),
+        ("pepper.pl", "Pepper (PL)"),
+        ("pepper.it", "Pepper (IT)"),
+        ("reddit", "Reddit"),
+    ]
+    for token, label in mapping:
+        if token in low:
+            return label
+    return urlparse(deal_id).netloc or "Другие"
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message, state: FSMContext):
+    await state.clear()
+    now_utc = datetime.now(timezone.utc)
+    since_24h = (now_utc - timedelta(hours=24)).isoformat()
+    since_7d = (now_utc - timedelta(days=7)).isoformat()
+
+    try:
+        res_7d = await db_exec(
+            lambda: supabase.table("posted_deals")
+            .select("brand,deal_id,created_at")
+            .gte("created_at", since_7d)
+            .limit(1000)
+            .execute()
+        )
+        res_tracked = await db_exec(
+            lambda: supabase.table("tracked_items").select("id").eq("user_id", message.from_user.id).execute()
+        )
+    except Exception as e:
+        logger.error("Stats DB error: %s", e)
+        await message.answer("⚠️ Ошибка загрузки статистики.", reply_markup=get_main_keyboard())
+        return
+
+    rows_7d = res_7d.data or []
+    rows_24h = [r for r in rows_7d if (r.get("created_at") or "") >= since_24h]
+    brand_counts = Counter((r.get("brand") or "Другие") for r in rows_7d).most_common(5)
+    source_counts = Counter(_source_name_from_deal_id(r.get("deal_id")) for r in rows_7d).most_common(5)
+
+    uptime_sec = int(time.time() - BOT_START_TS)
+    up_h, up_m = divmod(uptime_sec // 60, 60)
+    now_ts = time.time()
+    active_promos_cnt = sum(1 for p in ACTIVE_STORE_PROMOS.values() if (now_ts - p["ts"]) < PROMO_TTL_SECONDS)
+    quiet_status = "🌙 Тихий режим (ночь)" if is_quiet_hours() else "🔔 Обычный режим"
+    mail_status = f"✅ {EMAIL_USER}" if (EMAIL_USER and EMAIL_PASS) else "выкл"
+
+    lines = [
+        "📊 <b>Статистика USA Drop Radar</b>\n",
+        f"• Дропов за 24 часа: <b>{len(rows_24h)}</b>",
+        f"• Дропов за 7 дней: <b>{len(rows_7d)}</b>",
+        f"• Твоих товаров в трекере: <b>{len(res_tracked.data or [])}</b>",
+        f"• Активных промокодов сегодня: <b>{active_promos_cnt}</b>",
+        f"• RSS-источников: <b>{len(STANDARD_RSS_SOURCES) + len(REDDIT_RSS_SOURCES)}</b>",
+        f"• Почта: <code>{esc(mail_status)}</code>",
+        f"• Канал сейчас: {quiet_status}",
+        f"• Аптайм бота: <b>{up_h}ч {up_m}м</b>",
+    ]
+    if brand_counts:
+        lines.append("\n🏷 <b>Топ брендов (7 дней):</b>")
+        for b, c in brand_counts:
+            lines.append(f"  • {esc(b)} — <b>{c}</b>")
+    if source_counts:
+        lines.append("\n🌐 <b>Топ площадок (7 дней):</b>")
+        for s_name, c in source_counts:
+            lines.append(f"  • {esc(s_name)} — <b>{c}</b>")
+
+    await message.answer("\n".join(lines), reply_markup=get_main_keyboard())
+
+
+async def build_daily_digest_text() -> str | None:
+    since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        res = await db_exec(
+            lambda: supabase.table("posted_deals")
+            .select("*")
+            .gte("created_at", since_24h)
+            .order("id", desc=True)
+            .limit(120)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("Digest DB error: %s", e)
+        return None
+
+    rows = res.data or []
+    if not rows:
+        return None
+
+    def _score(row: dict) -> tuple[int, float]:
+        pct = row.get("discount_pct")
+        if not pct:
+            pct = extract_discount_pct(row.get("title") or "", "") or 0
+        usd = price_to_usd(row.get("price"))
+        price_bonus = -(usd if usd is not None else 999.0)
+        return (int(pct), price_bonus)
+
+    ranked = sorted(rows, key=_score, reverse=True)
+    picked = []
+    seen_brands = Counter()
+    for row in ranked:
+        b = (row.get("brand") or "").lower()
+        if seen_brands[b] >= 2:
+            continue
+        seen_brands[b] += 1
+        picked.append(row)
+        if len(picked) >= 5:
+            break
+
+    if not picked:
+        return None
+
+    today_str = datetime.now(KYIV_TZ).strftime("%d.%m.%Y")
+    lines = [f"🔥 <b>ТОП-{len(picked)} ДРОПОВ ДНЯ ({today_str})</b>\n"]
+    for idx, row in enumerate(picked, 1):
+        brand = esc(row.get("brand") or "Drop")
+        title = esc(row.get("title") or "Скидка")
+        price_str = row.get("price") or ""
+        pct = row.get("discount_pct") or extract_discount_pct(row.get("title") or "", "")
+        pct_tag = f" <b>(-{pct}%)</b>" if pct else ""
+        price_tag = f" — <code>{esc(format_price_multi(price_str))}</code>" if price_str else ""
+        url = row.get("url")
+        if url:
+            lines.append(f"{idx}. <b>[{brand}]</b> <a href=\"{html.escape(url)}\">{title}</a>{pct_tag}{price_tag}")
+        else:
+            lines.append(f"{idx}. <b>[{brand}]</b> {title}{pct_tag}{price_tag}")
+
+    lines.append("\n<i>Все актуальные скидки — выше в ленте ⬆️</i>")
+    return "\n".join(lines)
+
+
+@dp.message(Command("digest"))
+async def cmd_digest(message: types.Message, state: FSMContext):
+    await state.clear()
+    text = await build_daily_digest_text()
+    if not text:
+        await message.answer("📭 За последние 24 часа пока нет дропов для дайджеста.", reply_markup=get_main_keyboard())
+        return
+    parts = (message.text or "").split()
+    if len(parts) >= 2 and parts[1].lower() == "post" and CHANNEL_ID:
+        await bot.send_message(CHANNEL_ID, text, disable_web_page_preview=True, disable_notification=is_quiet_hours())
+        await message.answer("📢 Дайджест опубликован в канал!", reply_markup=get_main_keyboard())
+    else:
+        await message.answer(text + "\n\n<i>Чтобы отправить этот дайджест в канал сейчас, напиши:</i> <code>/digest post</code>", disable_web_page_preview=True, reply_markup=get_main_keyboard())
+
+
+async def run_daily_digest_loop():
+    global LAST_DIGEST_DATE
+    while True:
+        try:
+            now_kyiv = datetime.now(KYIV_TZ)
+            today_key = now_kyiv.strftime("%Y-%m-%d")
+            if now_kyiv.hour == DIGEST_HOUR and now_kyiv.minute < 15 and LAST_DIGEST_DATE != today_key:
+                text = await build_daily_digest_text()
+                if text and CHANNEL_ID:
+                    await bot.send_message(CHANNEL_ID, text, disable_web_page_preview=True, disable_notification=is_quiet_hours())
+                    LAST_DIGEST_DATE = today_key
+                    logger.info("📰 Вечерний дайджест дня опубликован в канал!")
+        except Exception as e:
+            logger.warning("⚠️ Ошибка вечернего дайджеста: %s", e)
+        await asyncio.sleep(300)
+
+
 async def update_rates_loop():
     while True:
         await asyncio.sleep(14400)
@@ -2737,6 +3025,7 @@ async def main():
         logger.warning("⚠️ Не удалось получить username бота: %s", e)
 
     await load_exchange_rates()
+    await load_active_promos_from_db()
     await fetch_nike_active_promo()
     web_runner = await start_web_server()
 
@@ -2747,6 +3036,7 @@ async def main():
     if CHANNEL_ID:
         tasks.append(asyncio.create_task(run_radar_standard()))
         tasks.append(asyncio.create_task(run_radar_reddit()))
+        tasks.append(asyncio.create_task(run_daily_digest_loop()))
     else:
         logger.warning("⚠️ CHANNEL_ID не задан — публикация RSS-дропов в канал отключена.")
 
