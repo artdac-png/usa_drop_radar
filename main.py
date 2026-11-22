@@ -782,6 +782,64 @@ async def fetch_nike_sizes(page_html: str, url: str, session: AsyncSession) -> t
         return [], None
 
 
+async def fetch_nike_active_promo() -> dict | None:
+    """Fetch Nike's official active promo code from nike.com promo banner / sale pages."""
+    candidate_urls = ["https://www.nike.com/w/sale-3yaep"]
+    try:
+        async with AsyncSession() as s:
+            # First discover active promo banner links from nike.com (e.g. Black Friday / Cyber Monday / Extra % Off)
+            home = await s.get("https://www.nike.com/", impersonate="chrome", timeout=15)
+            if home.status_code == 200:
+                p = extract_page_promo(home.text)
+                if p:
+                    register_store_promo("Nike", p["code"], pct=p.get("pct"), source="nike.com")
+                    return p
+                for m in re.finditer(r'href="(https://www\.nike\.com/w/[^"]+)"[^>]*>[^<]{0,60}%\s*Off', home.text, re.I):
+                    if m.group(1) not in candidate_urls:
+                        candidate_urls.insert(0, m.group(1))
+                for m in re.finditer(r'href="(/w/[^"]*(?:black-friday|cyber|sale|promo|extra)[^"]*)"', home.text, re.I):
+                    full_u = "https://www.nike.com" + m.group(1)
+                    if full_u not in candidate_urls:
+                        candidate_urls.append(full_u)
+
+            for promo_url in candidate_urls[:4]:
+                resp = await s.get(promo_url, impersonate="chrome", timeout=15)
+                if resp.status_code == 200:
+                    p = extract_page_promo(resp.text)
+                    if p:
+                        register_store_promo("Nike", p["code"], pct=p.get("pct"), source="nike.com")
+                        logger.info("🎟 Найден официальный промокод Nike: %s (-%s%%)", p["code"], p.get("pct"))
+                        return p
+    except Exception as e:
+        logger.debug("Nike active promo check error: %s", e)
+    return None
+
+
+async def fetch_adidas_sizes(url: str, session: AsyncSession) -> tuple[list[str], bool | None]:
+    """Fetch in-stock sizes from Adidas availability API if accessible."""
+    sku_match = re.search(r"/([A-Z0-9]{6})\.html", url, re.IGNORECASE)
+    if not sku_match:
+        return [], None
+    sku = sku_match.group(1).upper()
+    parsed = urlparse(url)
+    api_url = f"{parsed.scheme}://{parsed.netloc}/api/products/{sku}/availability"
+    try:
+        resp = await session.get(api_url, impersonate="chrome", timeout=10)
+        if resp.status_code != 200:
+            return [], None
+        data = resp.json()
+        sizes = [
+            str(v.get("size")).strip()
+            for v in (data.get("variation_list") or [])
+            if v.get("availability_status") == "IN_STOCK" and v.get("size")
+        ]
+        sizes = _dedupe_preserve_order(sizes)
+        return sizes, len(sizes) > 0
+    except Exception as e:
+        logger.debug("Adidas size API error for %s: %s", url, e)
+        return [], None
+
+
 def extract_generic_sizes(page_html: str) -> list[str]:
     """Extract in-stock sizes from JSON-LD hasVariant/offers or Shopify variants for clothing & footwear."""
     found: list[str] = []
@@ -947,13 +1005,22 @@ async def fetch_product_data(url: str) -> dict:
                     if nike_in_stock is not None:
                         available_sizes = nike_sizes
                         in_stock = nike_in_stock
+                elif "adidas." in url_lower:
+                    ad_sizes, ad_in_stock = await fetch_adidas_sizes(url, s)
+                    if ad_in_stock is not None:
+                        available_sizes = ad_sizes
+                        in_stock = ad_in_stock
+                    else:
+                        in_stock = not is_out_of_stock(page_html)
+                        available_sizes = extract_generic_sizes(page_html)
                 else:
                     in_stock = not is_out_of_stock(page_html)
                     available_sizes = extract_generic_sizes(page_html)
     except Exception as e:
         logger.warning("⚠️ Ошибка curl_cffi для %s: %s", url, e)
 
-    if (price == DEFAULT_PRICE_PLACEHOLDER or not image_url) and GAS_PROXY_URL and http_session:
+    needs_gas_sizes = (not available_sizes) and any(d in url_lower for d in ("levi.com", "calvinklein", "adidas.", "thenorthface.com"))
+    if (price == DEFAULT_PRICE_PLACEHOLDER or not image_url or needs_gas_sizes) and GAS_PROXY_URL and http_session:
         try:
             async with http_session.get(
                 GAS_PROXY_URL,
@@ -971,6 +1038,14 @@ async def fetch_product_data(url: str) -> dict:
                             parsed_title = data.get("title")
                         if not parsed_brand and data.get("brand"):
                             parsed_brand = data.get("brand")
+                        if not available_sizes and data.get("sizes"):
+                            available_sizes = normalize_size_list(data.get("sizes"))
+                            if available_sizes:
+                                in_stock = True
+                        if "in_stock" in data and isinstance(data["in_stock"], bool):
+                            in_stock = data["in_stock"]
+                        if not page_promo and data.get("promo") and isinstance(data["promo"], dict) and data["promo"].get("code"):
+                            page_promo = data["promo"]
         except Exception as e:
             logger.debug("GAS proxy fallback error for %s: %s", url, e)
 
@@ -1214,14 +1289,79 @@ async def cmd_help(message: types.Message, state: FSMContext):
     await message.answer(
         "📖 <b>Команды бота:</b>\n\n"
         "• /track или <b>➕ Добавить ссылку</b> — добавить товар для отслеживания\n"
-        "• /list или <b>📋 Мой список</b> — твои товары (цена, минимум, размеры)\n"
+        "• /list или <b>📋 Мой список</b> — твои товары (цена, промокод, минимум, размеры)\n"
         "• /checkall или <b>🔄 Проверить всё</b> — проверить все товары сразу\n"
+        "• /promo — сегодняшние промокоды (можно задать вручную: <code>/promo nike BFRIDAY 25</code>)\n"
         "• /alert <code>слово</code> или <b>🔔 Алерты</b> — личные уведомления по ключевым словам\n"
         "• /search <code>nike</code> или <b>🔍 Поиск</b> — поиск по последним найденным дропам\n"
         "• /rates или <b>💱 Курсы валют</b> — актуальные курсы валют\n"
         "• /cancel — отменить текущее действие",
         reply_markup=get_main_keyboard(),
     )
+
+
+@dp.message(Command("promo"))
+async def cmd_promo(message: types.Message, state: FSMContext):
+    await state.clear()
+    parts = (message.text or "").split()
+    if len(parts) == 1:
+        now = time.time()
+        active = [(b, p) for b, p in ACTIVE_STORE_PROMOS.items() if (now - p["ts"]) < PROMO_TTL_SECONDS]
+        if not active:
+            await message.answer(
+                "🎟 <b>Активных промокодов пока нет.</b>\n"
+                "Можешь добавить вручную: <code>/promo nike BFRIDAY 25</code>",
+                reply_markup=get_main_keyboard(),
+            )
+            return
+        lines = ["🎟 <b>Активные промокоды на сегодня:</b>\n"]
+        for brand_key, p in sorted(active):
+            disc = f" (-{p['pct']}%)" if p.get("pct") else ""
+            lines.append(f"• <b>{esc(brand_key.title())}</b>: <code>{esc(p['code'])}</code>{disc}")
+        lines.append("\n<i>Добавить/обновить:</i> <code>/promo nike BFRIDAY 25</code>\n<i>Удалить:</i> <code>/promo del nike</code>")
+        await message.answer("\n".join(lines), reply_markup=get_main_keyboard())
+        return
+
+    if parts[1].lower() == "del" and len(parts) >= 3:
+        brand_name = " ".join(parts[2:]).strip().lower()
+        canonical = (find_matched_brand(brand_name) or brand_name).lower()
+        if ACTIVE_STORE_PROMOS.pop(canonical, None) or ACTIVE_STORE_PROMOS.pop(brand_name, None):
+            await message.answer(f"🗑 Промокод для <b>{esc(brand_name.title())}</b> удалён.", reply_markup=get_main_keyboard())
+        else:
+            await message.answer("⚠️ Для этого бренда нет активного промокода.", reply_markup=get_main_keyboard())
+        return
+
+    if len(parts) >= 3:
+        # Support multi-word brand like: /promo calvin klein SAVE20 20
+        pct = None
+        if parts[-1].rstrip("%").isdigit():
+            pct = int(parts[-1].rstrip("%"))
+            code = parts[-2].upper()
+            brand_raw = " ".join(parts[1:-2]).strip()
+        else:
+            code = parts[-1].upper()
+            brand_raw = " ".join(parts[1:-1]).strip()
+        if not brand_raw or not code:
+            await message.answer("⚠️ Формат: <code>/promo nike BFRIDAY 25</code>", reply_markup=get_main_keyboard())
+            return
+        canonical = find_matched_brand(brand_raw) or brand_raw.title()
+        ACTIVE_STORE_PROMOS[canonical.lower()] = {
+            "code": code,
+            "pct": pct,
+            "fixed": None,
+            "fixed_cur": None,
+            "source": "вручную",
+            "ts": time.time(),
+        }
+        disc = f" (-{pct}%)" if pct else ""
+        await message.answer(
+            f"✅ Промокод сохранён: <b>{esc(canonical)}</b> → <code>{esc(code)}</code>{disc}\n"
+            "Теперь он будет автоматически подставляться в <b>📋 Мой список</b>!",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+
+    await message.answer("⚠️ Формат: <code>/promo nike BFRIDAY 25</code> или <code>/promo del nike</code>", reply_markup=get_main_keyboard())
 
 
 @dp.message(Command("rates"))
@@ -2055,8 +2195,9 @@ async def run_radar_reddit():
 
 async def update_rates_loop():
     while True:
-        await asyncio.sleep(43200)
+        await asyncio.sleep(14400)
         await load_exchange_rates()
+        await fetch_nike_active_promo()
 
 
 async def handle_ping(request: web.Request) -> web.Response:
@@ -2086,6 +2227,7 @@ async def main():
         logger.warning("⚠️ Не удалось получить username бота: %s", e)
 
     await load_exchange_rates()
+    await fetch_nike_active_promo()
     web_runner = await start_web_server()
 
     tasks = [
