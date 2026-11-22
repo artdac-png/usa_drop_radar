@@ -1045,6 +1045,15 @@ def extract_url_from_text(text: str | None) -> str | None:
     return match.group(0).rstrip(".,);") if match else None
 
 
+def format_sizes_block(avail_sizes: list[str]) -> str:
+    if not avail_sizes:
+        return ""
+    joined = esc(", ".join(avail_sizes))
+    if len(avail_sizes) > 5 or len(joined) > 45:
+        return f"<blockquote expandable>👟 <b>Все размеры в наличии ({len(avail_sizes)}):</b>\n<code>{joined}</code></blockquote>"
+    return f"👟 <b>Все размеры в наличии ({len(avail_sizes)}):</b> <code>{joined}</code>"
+
+
 def format_tracked_item_card(item: dict, page_promo: dict | None = None) -> str:
     brand = item.get("brand") or "Одежда"
     title = item.get("title") or "Товар"
@@ -1073,8 +1082,7 @@ def format_tracked_item_card(item: dict, page_promo: dict | None = None) -> str:
             lines.append(f"⭐ <b>Твои размеры в наличии:</b> <code>{esc(', '.join(matched_targets))}</code>")
         elif target_sizes:
             lines.append(f"🎯 <b>Жду твои размеры:</b> <code>{esc(', '.join(target_sizes))}</code> (пока нет)")
-        sizes_preview = ", ".join(avail_sizes[:18]) + (" ..." if len(avail_sizes) > 18 else "")
-        lines.append(f"👟 <b>Все размеры в наличии ({len(avail_sizes)}):</b> <code>{esc(sizes_preview)}</code>")
+        lines.append(format_sizes_block(avail_sizes))
     elif target_sizes:
         lines.append(f"🎯 <b>Отслеживаю размеры:</b> <code>{esc(', '.join(target_sizes))}</code>")
 
@@ -1405,8 +1413,7 @@ def build_price_change_message(item: dict, new_price: str, min_price: str | None
         matched = match_target_sizes(avail_sizes, target_sizes)
         if matched:
             lines.append(f"⭐ <b>Твои размеры в наличии:</b> <code>{esc(', '.join(matched))}</code>")
-        preview = ", ".join(avail_sizes[:18]) + (" ..." if len(avail_sizes) > 18 else "")
-        lines.append(f"👟 <b>Все размеры ({len(avail_sizes)}):</b> <code>{esc(preview)}</code>")
+        lines.append(format_sizes_block(avail_sizes))
     return "\n".join(lines)
 
 
@@ -1468,27 +1475,25 @@ async def evaluate_and_notify_item(item: dict, notify_if_unchanged: bool = False
         notified = True
 
     if newly_added_targets:
-        preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
         msg = (
             f"🎯 <b>ПОЯВИЛСЯ ТВОЙ РАЗМЕР!</b>\n\n"
             f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
             f"📦 {esc(item.get('title') or 'Товар')}\n"
             f"⭐ <b>Появились твои размеры:</b> <code>{esc(', '.join(newly_added_targets))}</code>\n"
             f"💳 <b>Цена:</b> <code>{esc(format_price_multi(new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price))}</code>\n"
-            f"👟 <b>Все размеры в наличии ({len(new_sizes)}):</b> <code>{esc(preview)}</code>"
+            f"{format_sizes_block(new_sizes)}"
         )
         await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
         notified = True
     elif newly_added_sizes and (old_sizes or back_in_stock):
         added_preview = ", ".join(newly_added_sizes[:12]) + (" ..." if len(newly_added_sizes) > 12 else "")
-        all_preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
         msg = (
             f"🟢 <b>ПОПОЛНЕНИЕ РАЗМЕРОВ!</b>\n\n"
             f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
             f"📦 {esc(item.get('title') or 'Товар')}\n"
             f"➕ <b>Новые размеры:</b> <code>{esc(added_preview)}</code>\n"
             f"💳 <b>Цена:</b> <code>{esc(format_price_multi(new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price))}</code>\n"
-            f"👟 <b>Все размеры в наличии ({len(new_sizes)}):</b> <code>{esc(all_preview)}</code>"
+            f"{format_sizes_block(new_sizes)}"
         )
         await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
         notified = True
@@ -1526,8 +1531,7 @@ async def evaluate_and_notify_item(item: dict, notify_if_unchanged: bool = False
                     lines.append(f"⭐ Твои размеры в наличии: <code>{esc(', '.join(matched))}</code>")
                 elif target_sizes:
                     lines.append(f"🎯 Твои размеры (<code>{esc(', '.join(target_sizes))}</code>) пока отсутствуют.")
-                preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
-                lines.append(f"👟 Все размеры ({len(new_sizes)}): <code>{esc(preview)}</code>")
+                lines.append(format_sizes_block(new_sizes))
             await bot.send_message(target_chat, "\n".join(lines))
 
     return {
