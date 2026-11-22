@@ -201,14 +201,24 @@ function extractSizesFromHtml(html, urlLower) {
   }
   if (found.length) return dedupe(found).slice(0, 30);
 
-  // 2. Levi's variantOptions ("stockLevelStatus":"inStock" ... "size":"M" / "variantOptionQualifiers")
+  // 2. Levi's variantOptions ("displaySizeDescription":"S" ... "stockLevelStatus":"inStock")
   if (urlLower.indexOf("levi.com") !== -1) {
-    var leviRegex = /"stockLevelStatus"\s*:\s*"(?:inStock|lowStock)"[\s\S]{0,300}?"value"\s*:\s*"([A-Za-z0-9./+\s-]{1,12})"/gi;
+    var leviOptRegex = /"displaySizeDescription"\s*:\s*"([^"]+)"[\s\S]{0,600}?"stockLevelStatus"\s*:\s*"(inStock|lowStock)"/gi;
     var lm;
-    while ((lm = leviRegex.exec(html)) !== null) {
-      if (isValidSizeToken(lm[1])) found.push(lm[1].trim());
+    while ((lm = leviOptRegex.exec(html)) !== null) {
+      var sz = lm[1].trim();
+      if (sz && sz.length <= 16) found.push(sz);
     }
-    if (found.length) return dedupe(found).slice(0, 30);
+    if (!found.length) {
+      var leviAvailRegex = /"available"\s*:\s*true\s*,\s*"length"\s*:\s*(?:"([^"]*)"|null)\s*,\s*"size"\s*:\s*(?:"([^"]*)"|null)\s*,\s*"waist"\s*:\s*(?:"([^"]*)"|null)/gi;
+      var la;
+      while ((la = leviAvailRegex.exec(html)) !== null) {
+        if (la[2]) found.push(la[2].trim());
+        else if (la[3] && la[1]) found.push(la[3].trim() + "x" + la[1].trim());
+        else if (la[3]) found.push(la[3].trim());
+      }
+    }
+    if (found.length) return dedupe(found).slice(0, 40);
   }
 
   // 3. Generic inline JSON variants (Calvin Klein, Shopify, SFCC, etc.)
