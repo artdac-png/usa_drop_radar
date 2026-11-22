@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -42,6 +43,7 @@ GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
 RADAR_STANDARD_INTERVAL = int(os.getenv("RADAR_STANDARD_INTERVAL", "600"))
 RADAR_REDDIT_INTERVAL = int(os.getenv("RADAR_REDDIT_INTERVAL", "900"))
 TRACKER_INTERVAL = int(os.getenv("TRACKER_INTERVAL", "10800"))
+MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "20"))
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise RuntimeError("❌ Ошибка: Не заданы переменные окружения (BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY)!")
@@ -51,22 +53,25 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher()
 http_session: aiohttp.ClientSession | None = None
 EXCHANGE_RATES: dict[str, float] = {}
+BOT_USERNAME: str | None = None
 
 DEFAULT_PRICE_PLACEHOLDER = "🔥 СМОТРЕТЬ НА САЙТЕ"
 RSS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; USADropRadarBot/2.0; +https://github.com/artdac-png/usa_drop_radar)",
+    "User-Agent": "Mozilla/5.0 (compatible; USADropRadarBot/2.1; +https://github.com/artdac-png/usa_drop_radar)",
     "Accept": "application/rss+xml, application/xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8",
 }
 
-# In-memory recent cache to avoid repeated DB queries on every RSS cycle
 RECENT_DEAL_IDS: deque[str] = deque(maxlen=1000)
 RECENT_DEAL_IDS_SET: set[str] = set()
 RECENT_TITLES: deque[str] = deque(maxlen=1000)
 RECENT_TITLES_SET: set[str] = set()
 
 
-class TrackState(StatesGroup):
+class BotState(StatesGroup):
     waiting_for_url = State()
+    waiting_for_sizes = State()
+    waiting_for_alert_keyword = State()
+    waiting_for_search_query = State()
 
 
 BRAND_ALIASES: list[tuple[str, str]] = [
@@ -119,12 +124,18 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("rack room", "Rack Room Shoes"),
     ("footlocker", "Footlocker"),
     ("foot locker", "Footlocker"),
+    ("finish line", "Finish Line"),
+    ("finishline", "Finish Line"),
     ("jd sports", "JD Sports"),
     ("zappos", "Zappos"),
+    ("6pm", "6pm"),
+    ("sierra", "Sierra"),
+    ("rei", "REI"),
     ("asos", "ASOS"),
     ("mandm", "MandM"),
     ("shop simon", "Shop Simon"),
     ("joes new balance", "Joes New Balance"),
+    ("joe's new balance", "Joes New Balance"),
     ("woot", "Woot"),
     ("shoebacca", "Shoebacca"),
     ("macy's", "Macy's"),
@@ -153,7 +164,6 @@ EXCLUDE_STOP_WORDS = [
     "dehumidifier", "frigidaire", "air filter", "appliance", "heater", "cooler", "fridge", "refrigerator", "washing", "dryer", "microwave", "oven", "blender",
 ]
 
-# Word-boundary regex prevents false positives like "pullover" (over), "bags" (gs), "tops" (ps), "in cart" (cart), "boyfriend" (boy)
 STOP_WORDS_REGEX = re.compile(
     r"\b(?:" + "|".join(re.escape(w) for w in EXCLUDE_STOP_WORDS) + r")\b",
     re.IGNORECASE,
@@ -161,14 +171,17 @@ STOP_WORDS_REGEX = re.compile(
 
 STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca+macys+gap+oldnavy&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=6pm+sierra+rei+finishline+joesnewbalance+footlocker+jdsports+zappos+nordstrom&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
     {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
+    {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/trainers"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/fashion"},
     {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sport"},
+    {"flag": "🇩🇪 [Германия / DE]", "url": "https://www.mydealz.de/rss/gruppe/sneaker"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/moda-y-accesorios"},
     {"flag": "🇪🇸 [Испания / ES]", "url": "https://www.chollometro.com/rss/grupo/deportes"},
     {"flag": "🇫🇷 [Франция / FR]", "url": "https://www.dealabs.com/rss/groupe/mode-et-accessoires"},
@@ -178,14 +191,48 @@ STANDARD_RSS_SOURCES = [
 
 REDDIT_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalfemalefashion/.rss"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"},
 ]
+
+PROMO_STOP_WORDS = {
+    "CODE", "OFF", "FREE", "SHIP", "SHIPPING", "SITE", "SITEWIDE", "ONLY",
+    "WITH", "HERE", "MORE", "CART", "DEAL", "SALE", "LINK", "PAGE", "THIS",
+    "THAT", "FROM", "YOUR", "SAVE", "EXTRA", "APPLY", "CHECKOUT", "ONLINE",
+}
+
+MENU_BUTTONS = {
+    "➕ Добавить ссылку",
+    "📋 Мой список",
+    "🔄 Проверить всё",
+    "🔔 Алерты",
+    "🔍 Поиск",
+    "💱 Курсы валют",
+    "ℹ️ Помощь",
+    "❌ Отмена",
+}
 
 
 async def db_exec(fn):
     """Run synchronous Supabase SDK calls in a worker thread to avoid blocking the event loop."""
     return await asyncio.to_thread(fn)
+
+
+async def safe_update_tracked_item(item_id, fields: dict) -> None:
+    """Update tracked_items gracefully; falls back to core columns if new migration columns aren't created yet."""
+    try:
+        await db_exec(lambda: supabase.table("tracked_items").update(fields).eq("id", item_id).execute())
+    except Exception as e:
+        core_fields = {k: v for k, v in fields.items() if k in ("last_price", "image_url", "title", "brand")}
+        if core_fields and core_fields != fields:
+            logger.warning("⚠️ Новые колонки tracked_items ещё не созданы в Supabase (%s). Обновляю базовые поля.", e)
+            try:
+                await db_exec(lambda: supabase.table("tracked_items").update(core_fields).eq("id", item_id).execute())
+            except Exception as e2:
+                logger.error("DB fallback update error: %s", e2)
+        else:
+            logger.error("DB update error: %s", e)
 
 
 def remember_deal(deal_id: str, title: str) -> None:
@@ -242,7 +289,10 @@ async def load_exchange_rates() -> None:
     if not http_session:
         return
     try:
-        async with http_session.get("https://open.er-api.com/v6/latest/USD", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with http_session.get(
+            "https://open.er-api.com/v6/latest/USD",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 if data.get("result") == "success":
@@ -264,7 +314,6 @@ async def load_exchange_rates() -> None:
 
 
 def parse_price_amount(price_str: str | None) -> tuple[float | None, str | None]:
-    """Return (numeric_amount, currency_code) from a price string like '$49.99' or '39,90 €'."""
     if not price_str:
         return None, None
     match = re.search(r"([$£€])\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*([$£€])", price_str)
@@ -278,6 +327,18 @@ def parse_price_amount(price_str: str | None) -> tuple[float | None, str | None]
         return None, None
     currency_map = {"$": "USD", "£": "GBP", "€": "EUR"}
     return amount, currency_map.get(symbol)
+
+
+def compute_min_price(old_min: str | None, new_price: str | None) -> str | None:
+    if not new_price or new_price == DEFAULT_PRICE_PLACEHOLDER:
+        return old_min
+    if not old_min or old_min == DEFAULT_PRICE_PLACEHOLDER:
+        return new_price
+    old_val, old_cur = parse_price_amount(old_min)
+    new_val, new_cur = parse_price_amount(new_price)
+    if old_val is not None and new_val is not None and old_cur == new_cur:
+        return new_price if new_val < old_val else old_min
+    return old_min
 
 
 def format_price_multi(price_str: str) -> str:
@@ -298,6 +359,34 @@ def format_price_multi(price_str: str) -> str:
     if base != "EUR":
         parts.append(f"€{eur_amount:.2f}")
     return f"{price_str} (~{' / '.join(parts)} / ~{int(round(uah_amount))} грн)"
+
+
+def extract_promo_code(title: str, summary: str) -> str | None:
+    """Extract promo/coupon code like 'code EXTRA20', 'w/ code SAVE30', 'promo: FALL25'."""
+    text = f"{title} {clean_text(re.sub(r'<[^>]+>', ' ', summary or ''))}"
+    patterns = [
+        r"(?:promo\s*code|coupon\s*code|use\s*code|w/\s*code|with\s*code|code|промокод)\s*[:#\"']?\s*([A-Z0-9][A-Z0-9_-]{2,19})\b",
+    ]
+    for pat in patterns:
+        for match in re.finditer(pat, text, re.IGNORECASE):
+            code = match.group(1).strip().upper()
+            if code in PROMO_STOP_WORDS:
+                continue
+            # Prefer codes that have at least one digit or are explicitly uppercase in the source text
+            raw_token = match.group(1)
+            if any(ch.isdigit() for ch in code) or raw_token.isupper():
+                return code
+    return None
+
+
+def extract_discount_pct(title: str, summary: str) -> int | None:
+    text = f"{title} {summary}"
+    pcts = [
+        int(m)
+        for m in re.findall(r"(?:extra\s*|up\s*to\s*|-)?(\d{1,2})\s*%\s*(?:off|скидк|rabatt|descuento|de\s*réduction)?", text, re.IGNORECASE)
+        if 5 <= int(m) <= 95
+    ]
+    return max(pcts) if pcts else None
 
 
 def extract_price(title: str, summary: str) -> str:
@@ -408,7 +497,6 @@ def extract_levis_image(url: str) -> str | None:
 
 
 def extract_tnf_image(url: str) -> str | None:
-    """Build direct Cloudinary hero image URL for The North Face product pages."""
     sku_match = re.search(r"(NF0A[A-Za-z0-9]+)", url, re.IGNORECASE)
     if not sku_match:
         return None
@@ -433,15 +521,26 @@ def normalize_image_url(img_url: str | None, page_url: str) -> str | None:
     return img_url
 
 
+def extract_meta_content(page_html: str, prop_name: str) -> str | None:
+    escaped = re.escape(prop_name)
+    patterns = [
+        rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+    ]
+    for pat in patterns:
+        match = re.search(pat, page_html, re.IGNORECASE)
+        if match:
+            return html.unescape(match.group(1)).strip()
+    return None
+
+
 def extract_page_image(page_html: str, page_url: str) -> str | None:
-    """Extract product image from og:image, twitter:image, JSON-LD schema.org image, or link rel=image_src."""
     for prop in ("og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"):
         val = extract_meta_content(page_html, prop)
         norm = normalize_image_url(val, page_url)
         if norm:
             return norm
 
-    # JSON-LD / Schema.org "image": "https://..." or "image": ["https://...", ...]
     json_img = (
         re.search(r'"image"\s*:\s*"(https?:\\?/\\?/[^"\\]+(?:\.(?:jpg|jpeg|png|webp)[^"\\]*|[^"\\]*))"', page_html, re.IGNORECASE)
         or re.search(r'"image"\s*:\s*\[\s*"(https?:\\?/\\?/[^"\\]+)"', page_html, re.IGNORECASE)
@@ -459,23 +558,10 @@ def extract_page_image(page_html: str, page_url: str) -> str | None:
     return None
 
 
-def extract_meta_content(page_html: str, prop_name: str) -> str | None:
-    """Extract meta tag content regardless of attribute order or quote style, preserving original case."""
-    escaped = re.escape(prop_name)
-    patterns = [
-        rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
-        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
-    ]
-    for pat in patterns:
-        match = re.search(pat, page_html, re.IGNORECASE)
-        if match:
-            return html.unescape(match.group(1)).strip()
-    return None
-
-
 def is_out_of_stock(page_html: str) -> bool:
-    """Check structured availability signals to avoid false positives from JS/CSS strings."""
     if re.search(r'"availability"\s*:\s*"(?:https?://schema\.org/)?OutOfStock"', page_html, re.IGNORECASE):
+        if re.search(r'"availability"\s*:\s*"(?:https?://schema\.org/)?InStock"', page_html, re.IGNORECASE):
+            return False
         return True
     if re.search(r'<meta[^>]+availability[^>]+content=["\'](?:out of stock|oos|sold out)["\']', page_html, re.IGNORECASE):
         return True
@@ -503,7 +589,167 @@ def detect_currency_symbol(page_html: str, url: str) -> str:
     return "$"
 
 
-async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str | None]:
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for item in items:
+        key = item.strip()
+        if key and key.lower() not in seen:
+            seen.add(key.lower())
+            out.append(key)
+    return out
+
+
+async def fetch_nike_sizes(page_html: str, url: str, session: AsyncSession) -> tuple[list[str], bool | None]:
+    """Parse Nike __NEXT_DATA__ + available_gtins/v3 API to get exact in-stock sizes for any Nike shoes or apparel."""
+    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', page_html, re.S)
+    if not m:
+        return [], None
+    try:
+        data = json.loads(m.group(1))
+        page_props = data.get("props", {}).get("pageProps", {})
+        selected = page_props.get("selectedProduct") or {}
+        sizes_meta = selected.get("sizes") or []
+        style_color = selected.get("styleColor")
+        if not style_color:
+            # Extract styleColor from URL tail like .../CD6404-002
+            path_tail = urlparse(url).path.rstrip("/").split("/")[-1]
+            if re.match(r"^[A-Z0-9]{5,7}-[A-Z0-9]{3}$", path_tail, re.IGNORECASE):
+                style_color = path_tail.upper()
+        if not sizes_meta or not style_color:
+            return [], None
+
+        gtin_to_size: dict[str, tuple[int, str]] = {}
+        for idx, s in enumerate(sizes_meta):
+            label = (s.get("localizedLabel") or s.get("label") or "").strip()
+            seq = s.get("sortSequence", idx)
+            for g in s.get("gtins") or []:
+                gtin = g.get("gtin")
+                if gtin and label:
+                    gtin_to_size[gtin] = (seq, label)
+
+        path_lower = urlparse(url).path.lower()
+        merch_group = "EU" if any(seg in path_lower for seg in ("/gb/", "/de/", "/fr/", "/es/", "/it/", "/pl/", "/nl/")) else "US"
+        api_url = f"https://api.nike.com/deliver/available_gtins/v3?filter=styleColor({style_color})&filter=merchGroup({merch_group})"
+        api_resp = await session.get(api_url, impersonate="chrome", timeout=10)
+        if api_resp.status_code != 200:
+            return [], None
+
+        api_data = api_resp.json()
+        available_pairs: list[tuple[int, str]] = []
+        for obj in api_data.get("objects") or []:
+            if obj.get("available") is True:
+                gtin = obj.get("gtin")
+                if gtin in gtin_to_size:
+                    available_pairs.append(gtin_to_size[gtin])
+        available_pairs.sort(key=lambda x: x[0])
+        available_sizes = _dedupe_preserve_order([lbl for _, lbl in available_pairs])
+        return available_sizes, len(available_sizes) > 0
+    except Exception as e:
+        logger.debug("Nike size parse error for %s: %s", url, e)
+        return [], None
+
+
+def extract_generic_sizes(page_html: str) -> list[str]:
+    """Extract in-stock sizes from JSON-LD hasVariant/offers or Shopify variants for clothing & footwear."""
+    found: list[str] = []
+    # 1. JSON-LD <script type="application/ld+json">
+    for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page_html, re.S | re.I):
+        try:
+            obj = json.loads(block.strip())
+        except Exception:
+            continue
+        nodes = obj if isinstance(obj, list) else [obj]
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            variants = node.get("hasVariant") or node.get("offers") or []
+            if isinstance(variants, dict):
+                variants = [variants]
+            for v in variants:
+                if not isinstance(v, dict):
+                    continue
+                offers = v.get("offers")
+                avail = str(v.get("availability") or (offers.get("availability") if isinstance(offers, dict) else "")).lower()
+                if "instock" in avail or (avail == "" and v.get("size")):
+                    sz = v.get("size")
+                    if isinstance(sz, str) and 1 <= len(sz.strip()) <= 20:
+                        found.append(sz.strip())
+
+    if found:
+        return _dedupe_preserve_order(found)
+
+    # 2. Shopify / common inline JSON variants: {"option1":"L","available":true} or {"size":"M","inStock":true}
+    for m in re.finditer(
+        r'"(?:size|sizeName|option1)"\s*:\s*"([A-Za-z0-9./+\s-]{1,18})"[^\}]{0,120}"(?:available|inStock|isAvailable)"\s*:\s*true',
+        page_html,
+        re.IGNORECASE,
+    ):
+        val = m.group(1).strip()
+        if re.match(r"^(?:XXS|XS|S|M|L|XL|XXL|2XL|3XL|4XL|\d{1,2}(?:\.\d)?|US\s*\d{1,2}(?:\.\d)?|EU\s*\d{2}(?:\.\d)?|M\s*\d.*|W\s*\d.*)$", val, re.IGNORECASE):
+            found.append(val)
+
+    return _dedupe_preserve_order(found)[:30]
+
+
+def normalize_size_list(raw) -> list[str]:
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [s.strip() for s in re.split(r"[,;/]+", raw) if s.strip()]
+    return []
+
+
+def parse_user_sizes_input(text: str) -> list[str]:
+    cleaned = text.strip()
+    if cleaned in ("-", "нет", "очистить", "clear", "none", "0"):
+        return []
+    parts = [p.strip() for p in re.split(r"[,;\n]+", cleaned) if p.strip()]
+    return _dedupe_preserve_order(parts)[:15]
+
+
+def size_matches_target(available_label: str, target: str) -> bool:
+    """Match target like '10', '7.5', 'W 7.5', 'M', 'XL' against labels like 'M 10 / W 11.5', 'M 6 / W 7.5', 'L'."""
+    avail_norm = re.sub(r"\s+", " ", available_label.strip().upper())
+    targ_norm = re.sub(r"\s+", " ", target.strip().upper())
+    if not targ_norm:
+        return False
+    if avail_norm == targ_norm:
+        return True
+    # Split slash-separated dual labels like "M 6 / W 7.5"
+    segments = [seg.strip() for seg in avail_norm.split("/")]
+    for seg in segments:
+        if seg == targ_norm:
+            return True
+        # Match standalone number/letter token inside segment (so "10" matches "M 10" but NOT "M 10.5")
+        if re.search(rf"(?<![A-Z0-9.]){re.escape(targ_norm)}(?![A-Z0-9.])", seg):
+            # If user wrote just "M", don't match "M 10" (men's shoe prefix)
+            if targ_norm in ("M", "W") and re.search(r"\d", seg):
+                continue
+            return True
+    return False
+
+
+def match_target_sizes(available_sizes: list[str], target_sizes: list[str]) -> list[str]:
+    if not available_sizes or not target_sizes:
+        return []
+    matched = []
+    for avail in available_sizes:
+        if any(size_matches_target(avail, t) for t in target_sizes):
+            matched.append(avail)
+    return _dedupe_preserve_order(matched)
+
+
+async def fetch_product_data(url: str) -> dict:
+    """Fetch price, image, title, brand, stock status, and available sizes for a product URL."""
     price = DEFAULT_PRICE_PLACEHOLDER
     url_lower = url.lower()
     image_url: str | None = None
@@ -513,6 +759,8 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
         image_url = extract_tnf_image(url)
     parsed_title: str | None = None
     parsed_brand: str | None = None
+    in_stock: bool = True
+    available_sizes: list[str] = []
 
     try:
         async with AsyncSession() as s:
@@ -549,6 +797,15 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
                 if price_num:
                     symbol = detect_currency_symbol(page_html, url)
                     price = f"{symbol}{price_num}"
+
+                if "nike.com" in url_lower:
+                    nike_sizes, nike_in_stock = await fetch_nike_sizes(page_html, url, s)
+                    if nike_in_stock is not None:
+                        available_sizes = nike_sizes
+                        in_stock = nike_in_stock
+                else:
+                    in_stock = not is_out_of_stock(page_html)
+                    available_sizes = extract_generic_sizes(page_html)
     except Exception as e:
         logger.warning("⚠️ Ошибка curl_cffi для %s: %s", url, e)
 
@@ -578,7 +835,14 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
         if not ("levi.com" in url_lower or "thenorthface.com" in url_lower):
             image_url = None
 
-    return price, image_url, parsed_title, parsed_brand
+    return {
+        "price": price,
+        "image_url": image_url,
+        "title": parsed_title,
+        "brand": parsed_brand,
+        "in_stock": in_stock,
+        "available_sizes": available_sizes,
+    }
 
 
 async def send_photo_or_text(
@@ -588,7 +852,6 @@ async def send_photo_or_text(
     reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None,
     disable_web_page_preview: bool = True,
 ) -> bool:
-    """Send photo with caption (auto-truncated to 1024 chars), falling back to plain text on photo error."""
     if image_url:
         caption = text if len(text) <= 1024 else text[:1020] + "..."
         try:
@@ -616,7 +879,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавить ссылку"), KeyboardButton(text="📋 Мой список")],
-            [KeyboardButton(text="💱 Курсы валют"), KeyboardButton(text="ℹ️ Помощь")],
+            [KeyboardButton(text="🔄 Проверить всё"), KeyboardButton(text="🔔 Алерты")],
+            [KeyboardButton(text="🔍 Поиск"), KeyboardButton(text="💱 Курсы валют"), KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
     )
@@ -636,13 +900,152 @@ def extract_url_from_text(text: str | None) -> str | None:
     return match.group(0).rstrip(".,);") if match else None
 
 
+def format_tracked_item_card(item: dict) -> str:
+    brand = item.get("brand") or "Одежда"
+    title = item.get("title") or "Товар"
+    last_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
+    min_price = item.get("min_price")
+    in_stock = item.get("in_stock", True)
+    avail_sizes = normalize_size_list(item.get("available_sizes"))
+    target_sizes = normalize_size_list(item.get("target_sizes"))
+
+    lines = [
+        f"🏷 <b>Бренд:</b> {esc(brand)}",
+        f"📦 <b>Модель:</b> {esc(title)}",
+        f"💳 <b>Цена:</b> <code>{esc(format_price_multi(last_price))}</code>",
+    ]
+    if min_price and min_price != DEFAULT_PRICE_PLACEHOLDER:
+        lines.append(f"📉 <b>Минимум:</b> <code>{esc(min_price)}</code>")
+
+    if in_stock is False:
+        lines.append("🔴 <b>Наличие:</b> Нет в наличии (жду ресток)")
+    elif avail_sizes:
+        matched_targets = match_target_sizes(avail_sizes, target_sizes)
+        if matched_targets:
+            lines.append(f"⭐ <b>Твои размеры в наличии:</b> <code>{esc(', '.join(matched_targets))}</code>")
+        elif target_sizes:
+            lines.append(f"🎯 <b>Жду твои размеры:</b> <code>{esc(', '.join(target_sizes))}</code> (пока нет)")
+        sizes_preview = ", ".join(avail_sizes[:18]) + (" ..." if len(avail_sizes) > 18 else "")
+        lines.append(f"👟 <b>Все размеры в наличии ({len(avail_sizes)}):</b> <code>{esc(sizes_preview)}</code>")
+    elif target_sizes:
+        lines.append(f"🎯 <b>Отслеживаю размеры:</b> <code>{esc(', '.join(target_sizes))}</code>")
+
+    return "\n".join(lines)
+
+
+def build_tracked_item_kb(item: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🛒 Перейти", url=item["url"]),
+                InlineKeyboardButton(text="🔄 Проверить", callback_data=f"chk_{item['id']}"),
+            ],
+            [
+                InlineKeyboardButton(text="👟 Размеры", callback_data=f"sz_{item['id']}"),
+                InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item['id']}"),
+            ],
+        ]
+    )
+
+
+async def add_url_to_tracker(message: types.Message, user_id: int, url: str) -> None:
+    try:
+        existing = await db_exec(
+            lambda: supabase.table("tracked_items")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("url", url)
+            .execute()
+        )
+        if existing.data:
+            await message.answer("ℹ️ Эта ссылка уже есть в твоём списке отслеживания.", reply_markup=get_main_keyboard())
+            return
+    except Exception as e:
+        logger.error("DB duplicate check error: %s", e)
+
+    status_msg = await message.answer("⏳ Сканирую товар (цена, фото, наличие и размеры)...")
+    data = await fetch_product_data(url)
+    price = data["price"]
+    image_url = data["image_url"]
+    title = clean_text(data["title"] or extract_title_from_url(url))
+    brand = clean_text(data["brand"] or find_matched_brand(title) or find_matched_brand(url) or "Брендовая вещь")
+    in_stock = data["in_stock"]
+    avail_sizes = data["available_sizes"]
+    min_price = price if price != DEFAULT_PRICE_PLACEHOLDER else None
+
+    full_payload = {
+        "user_id": user_id,
+        "url": url,
+        "brand": brand,
+        "title": title,
+        "last_price": price,
+        "min_price": min_price,
+        "image_url": image_url,
+        "in_stock": in_stock,
+        "available_sizes": avail_sizes,
+        "target_sizes": [],
+    }
+    base_payload = {
+        "user_id": user_id,
+        "url": url,
+        "brand": brand,
+        "title": title,
+        "last_price": price,
+        "image_url": image_url,
+    }
+
+    try:
+        try:
+            res = await db_exec(lambda: supabase.table("tracked_items").insert(full_payload).execute())
+        except Exception:
+            res = await db_exec(lambda: supabase.table("tracked_items").insert(base_payload).execute())
+        if not res.data:
+            await message.answer("⚠️ Ошибка сохранения в базу.", reply_markup=get_main_keyboard())
+            return
+        saved_item = res.data[0]
+        saved_item.setdefault("min_price", min_price)
+        saved_item.setdefault("in_stock", in_stock)
+        saved_item.setdefault("available_sizes", avail_sizes)
+        saved_item.setdefault("target_sizes", [])
+    except Exception as e:
+        logger.error("DB insert error: %s", e)
+        await message.answer("⚠️ Ошибка БД при сохранении.", reply_markup=get_main_keyboard())
+        return
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    caption = "✅ <b>Сохранено!</b>\n\n" + format_tracked_item_card(saved_item)
+    await send_photo_or_text(message.chat.id, caption, image_url=image_url, reply_markup=build_tracked_item_kb(saved_item))
+    await message.answer(
+        "Товар добавлен! Можешь нажать <b>👟 Размеры</b> под карточкой, чтобы задать приоритетные размеры для себя 👇",
+        reply_markup=get_main_keyboard(),
+    )
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) == 2 and args[1].startswith("track_"):
+        deal_row_id = args[1].split("_", 1)[1].strip()
+        try:
+            res = await db_exec(lambda: supabase.table("posted_deals").select("*").eq("id", deal_row_id).limit(1).execute())
+            if res.data and res.data[0].get("url"):
+                await add_url_to_tracker(message, message.from_user.id, res.data[0]["url"])
+                return
+        except Exception as e:
+            logger.warning("Deep-link track error: %s", e)
+        await message.answer("⚠️ Не удалось найти ссылку для этого дропа.", reply_markup=get_main_keyboard())
+        return
+
     await message.answer(
         "👋 <b>Привет! Я USA Drop Radar.</b>\n\n"
-        "• Автоматически мониторю скидки на брендовую одежду и обувь.\n"
-        "• Могу отслеживать цены на любые твои ссылки и сообщать об изменениях.\n\n"
+        "• Автоматически мониторю скидки и промокоды на брендовую одежду и обувь.\n"
+        "• Отслеживаю <b>цены, минимум цены, наличие и размеры</b> по твоим ссылкам.\n"
+        "• Умею присылать личные алерты по ключевым словам.\n\n"
         "Выбери действие в меню ниже 👇",
         reply_markup=get_main_keyboard(),
     )
@@ -654,9 +1057,12 @@ async def cmd_help(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "📖 <b>Команды бота:</b>\n\n"
-        "• /track или <b>➕ Добавить ссылку</b> — добавить товар для отслеживания цены\n"
-        "• /list или <b>📋 Мой список</b> — посмотреть и проверить свои товары\n"
-        "• /rates или <b>💱 Курсы валют</b> — актуальные курсы USD / EUR / GBP / UAH\n"
+        "• /track или <b>➕ Добавить ссылку</b> — добавить товар для отслеживания\n"
+        "• /list или <b>📋 Мой список</b> — твои товары (цена, минимум, размеры)\n"
+        "• /checkall или <b>🔄 Проверить всё</b> — проверить все товары сразу\n"
+        "• /alert <code>слово</code> или <b>🔔 Алерты</b> — личные уведомления по ключевым словам\n"
+        "• /search <code>nike</code> или <b>🔍 Поиск</b> — поиск по последним найденным дропам\n"
+        "• /rates или <b>💱 Курсы валют</b> — актуальные курсы валют\n"
         "• /cancel — отменить текущее действие",
         reply_markup=get_main_keyboard(),
     )
@@ -692,92 +1098,21 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Добавить ссылку")
 @dp.message(Command("track"))
 async def start_tracking_flow(message: types.Message, state: FSMContext):
-    await state.set_state(TrackState.waiting_for_url)
+    await state.set_state(BotState.waiting_for_url)
     await message.answer(
         "🔗 <b>Отправь мне ссылку на вещь</b> (можно просто вставить сообщение со ссылкой):",
         reply_markup=get_cancel_keyboard(),
     )
 
 
-@dp.message(
-    TrackState.waiting_for_url,
-    ~F.text.startswith("/"),
-    ~F.text.in_({"📋 Мой список", "➕ Добавить ссылку", "💱 Курсы валют", "ℹ️ Помощь", "❌ Отмена"}),
-)
+@dp.message(BotState.waiting_for_url, ~F.text.startswith("/"), ~F.text.in_(MENU_BUTTONS))
 async def process_track_url(message: types.Message, state: FSMContext):
     url = extract_url_from_text(message.text)
     if not url:
         await message.answer("⚠️ Не нашёл ссылку в сообщении. Отправь URL вида <code>https://...</code> или нажми <b>❌ Отмена</b>.")
         return
-
-    # Check for duplicate URL for this user
-    try:
-        existing = await db_exec(
-            lambda: supabase.table("tracked_items")
-            .select("id")
-            .eq("user_id", message.from_user.id)
-            .eq("url", url)
-            .execute()
-        )
-        if existing.data:
-            await state.clear()
-            await message.answer("ℹ️ Эта ссылка уже есть в твоём списке отслеживания.", reply_markup=get_main_keyboard())
-            return
-    except Exception as e:
-        logger.error("DB duplicate check error: %s", e)
-
-    status_msg = await message.answer("⏳ Сканирую страницу товара...")
-    price, image_url, parsed_title, parsed_brand = await fetch_product_data(url)
-    title = clean_text(parsed_title or extract_title_from_url(url))
-    brand = clean_text(parsed_brand or find_matched_brand(title) or find_matched_brand(url) or "Брендовая вещь")
-
-    try:
-        res = await db_exec(
-            lambda: supabase.table("tracked_items")
-            .insert({
-                "user_id": message.from_user.id,
-                "url": url,
-                "brand": brand,
-                "title": title,
-                "last_price": price,
-                "image_url": image_url,
-            })
-            .execute()
-        )
-        if not res.data:
-            await message.answer("⚠️ Ошибка сохранения в базу.", reply_markup=get_main_keyboard())
-            await state.clear()
-            return
-        item_id = res.data[0]["id"]
-    except Exception as e:
-        logger.error("DB insert error: %s", e)
-        await message.answer("⚠️ Ошибка БД при сохранении.", reply_markup=get_main_keyboard())
-        await state.clear()
-        return
-
     await state.clear()
-    try:
-        await status_msg.delete()
-    except Exception:
-        pass
-
-    price_display = format_price_multi(price)
-    caption = (
-        "✅ <b>Сохранено!</b>\n\n"
-        f"🏷 <b>Бренд:</b> {esc(brand)}\n"
-        f"📦 <b>Модель:</b> {esc(title)}\n"
-        f"💳 <b>Цена:</b> <code>{esc(price_display)}</code>"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🛒 Открыть", url=url),
-                InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item_id}"),
-            ]
-        ]
-    )
-    await send_photo_or_text(message.chat.id, caption, image_url=image_url, reply_markup=kb)
-    await message.answer("Товар добавлен в отслеживание 👇", reply_markup=get_main_keyboard())
+    await add_url_to_tracker(message, message.from_user.id, url)
 
 
 @dp.message(F.text == "📋 Мой список")
@@ -802,22 +1137,69 @@ async def show_tracked_list(message: types.Message, state: FSMContext):
 
     await message.answer(f"📋 <b>Твои товары ({len(res.data)}):</b>", reply_markup=get_main_keyboard())
     for item in res.data:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🛒 Перейти", url=item["url"]),
-                    InlineKeyboardButton(text="🔄 Проверить", callback_data=f"chk_{item['id']}"),
-                    InlineKeyboardButton(text="❌ Удалить", callback_data=f"del_{item['id']}"),
-                ]
-            ]
+        caption = format_tracked_item_card(item)
+        await send_photo_or_text(
+            message.chat.id,
+            caption,
+            image_url=item.get("image_url"),
+            reply_markup=build_tracked_item_kb(item),
         )
-        price_display = format_price_multi(item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER)
-        caption = (
-            f"🏷 <b>Бренд:</b> {esc(item.get('brand') or 'Одежда')}\n"
-            f"📦 <b>Модель:</b> {esc(item.get('title') or 'Товар')}\n"
-            f"💳 <b>Цена:</b> <code>{esc(price_display)}</code>"
+
+
+@dp.callback_query(F.data.startswith("sz_"))
+async def start_set_sizes(callback: types.CallbackQuery, state: FSMContext):
+    item_id = callback.data.split("_", 1)[1]
+    await state.set_state(BotState.waiting_for_sizes)
+    await state.update_data(size_item_id=item_id)
+    await callback.answer()
+    await callback.message.answer(
+        "👟 <b>Введи свои приоритетные размеры через запятую</b>\n"
+        "Примеры:\n"
+        "• Обувь: <code>10, 7.5</code> или <code>M 10, W 7.5</code>\n"
+        "• Одежда: <code>M, L</code>\n"
+        "• Чтобы очистить приоритетные размеры, отправь <code>-</code>\n\n"
+        "<i>Все остальные размеры и изменения цены всё равно будут отслеживаться и показываться!</i>",
+        reply_markup=get_cancel_keyboard(),
+    )
+
+
+@dp.message(BotState.waiting_for_sizes, ~F.text.startswith("/"), ~F.text.in_(MENU_BUTTONS))
+async def save_target_sizes(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    item_id = state_data.get("size_item_id")
+    await state.clear()
+    if not item_id:
+        await message.answer("⚠️ Товар не выбран.", reply_markup=get_main_keyboard())
+        return
+
+    target_sizes = parse_user_sizes_input(message.text or "")
+    try:
+        res = await db_exec(
+            lambda: supabase.table("tracked_items")
+            .update({"target_sizes": target_sizes})
+            .eq("id", item_id)
+            .eq("user_id", message.from_user.id)
+            .execute()
         )
-        await send_photo_or_text(message.chat.id, caption, image_url=item.get("image_url"), reply_markup=kb)
+        if not res.data:
+            await message.answer("❌ Не удалось обновить размеры (проверь, выполнен ли SQL в Supabase).", reply_markup=get_main_keyboard())
+            return
+    except Exception as e:
+        logger.error("Save target_sizes error: %s", e)
+        await message.answer(
+            "⚠️ Колонка <code>target_sizes</code> ещё не добавлена в Supabase. Выполни SQL-миграцию и попробуй снова.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+
+    if target_sizes:
+        await message.answer(
+            f"✅ Приоритетные размеры сохранены: <code>{esc(', '.join(target_sizes))}</code>\n"
+            "Как только они появятся в наличии — пришлю приоритетный алерт 🎯",
+            reply_markup=get_main_keyboard(),
+        )
+    else:
+        await message.answer("✅ Приоритетные размеры очищены (буду показывать все размеры).", reply_markup=get_main_keyboard())
 
 
 @dp.callback_query(F.data.startswith("del_"))
@@ -846,10 +1228,169 @@ async def delete_tracked_item(callback: types.CallbackQuery):
         pass
 
 
+def build_price_change_message(item: dict, new_price: str, min_price: str | None = None, avail_sizes: list[str] | None = None) -> str:
+    old_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
+    old_amount, old_cur = parse_price_amount(old_price)
+    new_amount, new_cur = parse_price_amount(new_price)
+
+    header = "🔔 <b>ЦЕНА ИЗМЕНИЛАСЬ!</b>"
+    if old_amount and new_amount and old_cur == new_cur:
+        pct = ((new_amount - old_amount) / old_amount) * 100
+        if new_amount < old_amount:
+            header = f"📉 <b>ЦЕНА СНИЗИЛАСЬ ({pct:.0f}%)!</b>"
+        elif new_amount > old_amount:
+            header = f"📈 <b>ЦЕНА ВЫРОСЛА (+{pct:.0f}%)</b>"
+
+    lines = [
+        header,
+        "",
+        f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>",
+        f"📦 {esc(item.get('title') or 'Товар')}",
+        f"💳 <b>Было:</b> <code>{esc(old_price)}</code>",
+        f"💸 <b>Стало:</b> <code>{esc(format_price_multi(new_price))}</code>",
+    ]
+    if min_price and min_price != DEFAULT_PRICE_PLACEHOLDER:
+        lines.append(f"📉 <b>Минимум:</b> <code>{esc(min_price)}</code>")
+
+    target_sizes = normalize_size_list(item.get("target_sizes"))
+    if avail_sizes:
+        matched = match_target_sizes(avail_sizes, target_sizes)
+        if matched:
+            lines.append(f"⭐ <b>Твои размеры в наличии:</b> <code>{esc(', '.join(matched))}</code>")
+        preview = ", ".join(avail_sizes[:18]) + (" ..." if len(avail_sizes) > 18 else "")
+        lines.append(f"👟 <b>Все размеры ({len(avail_sizes)}):</b> <code>{esc(preview)}</code>")
+    return "\n".join(lines)
+
+
+async def evaluate_and_notify_item(item: dict, notify_if_unchanged: bool = False, chat_id: int | None = None) -> dict:
+    """Check one tracked item for price, stock, and size updates, persist to DB, and notify user."""
+    target_chat = chat_id or item["user_id"]
+    data = await fetch_product_data(item["url"])
+    new_price = data["price"]
+    new_image = data["image_url"]
+    new_in_stock = data["in_stock"]
+    new_sizes = data["available_sizes"]
+
+    old_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
+    old_min = item.get("min_price")
+    old_in_stock = item.get("in_stock", True)
+    old_sizes = normalize_size_list(item.get("available_sizes"))
+    target_sizes = normalize_size_list(item.get("target_sizes"))
+
+    image_to_use = item.get("image_url") or new_image
+    updated_min = compute_min_price(old_min or old_price, new_price)
+
+    update_fields: dict = {}
+    if not item.get("image_url") and new_image:
+        update_fields["image_url"] = new_image
+    if updated_min and updated_min != old_min:
+        update_fields["min_price"] = updated_min
+    if new_in_stock != old_in_stock:
+        update_fields["in_stock"] = new_in_stock
+    if new_sizes != old_sizes and (new_sizes or old_sizes):
+        update_fields["available_sizes"] = new_sizes
+
+    # 1. Price change check (ALWAYS checked regardless of sizes)
+    price_changed = False
+    if new_price != DEFAULT_PRICE_PLACEHOLDER:
+        old_amt, old_cur = parse_price_amount(old_price)
+        new_amt, new_cur = parse_price_amount(new_price)
+        is_same = (
+            old_amt is not None
+            and new_amt is not None
+            and old_cur == new_cur
+            and abs(old_amt - new_amt) < 0.01
+        ) or new_price == old_price
+        if not is_same:
+            price_changed = True
+            update_fields["last_price"] = new_price
+
+    # 2. Size & stock restock check
+    old_sizes_lower = {s.lower() for s in old_sizes}
+    newly_added_sizes = [s for s in new_sizes if s.lower() not in old_sizes_lower]
+    newly_added_targets = match_target_sizes(newly_added_sizes, target_sizes)
+    back_in_stock = (old_in_stock is False) and (new_in_stock is True)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ", url=item["url"])]])
+    notified = False
+
+    if price_changed:
+        msg = build_price_change_message(item, new_price, min_price=updated_min, avail_sizes=new_sizes)
+        await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
+        notified = True
+
+    if newly_added_targets:
+        preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
+        msg = (
+            f"🎯 <b>ПОЯВИЛСЯ ТВОЙ РАЗМЕР!</b>\n\n"
+            f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
+            f"📦 {esc(item.get('title') or 'Товар')}\n"
+            f"⭐ <b>Появились твои размеры:</b> <code>{esc(', '.join(newly_added_targets))}</code>\n"
+            f"💳 <b>Цена:</b> <code>{esc(format_price_multi(new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price))}</code>\n"
+            f"👟 <b>Все размеры в наличии ({len(new_sizes)}):</b> <code>{esc(preview)}</code>"
+        )
+        await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
+        notified = True
+    elif newly_added_sizes and (old_sizes or back_in_stock):
+        added_preview = ", ".join(newly_added_sizes[:12]) + (" ..." if len(newly_added_sizes) > 12 else "")
+        all_preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
+        msg = (
+            f"🟢 <b>ПОПОЛНЕНИЕ РАЗМЕРОВ!</b>\n\n"
+            f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
+            f"📦 {esc(item.get('title') or 'Товар')}\n"
+            f"➕ <b>Новые размеры:</b> <code>{esc(added_preview)}</code>\n"
+            f"💳 <b>Цена:</b> <code>{esc(format_price_multi(new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price))}</code>\n"
+            f"👟 <b>Все размеры в наличии ({len(new_sizes)}):</b> <code>{esc(all_preview)}</code>"
+        )
+        await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
+        notified = True
+    elif back_in_stock:
+        msg = (
+            f"🟢 <b>СНОВА В НАЛИЧИИ!</b>\n\n"
+            f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
+            f"📦 {esc(item.get('title') or 'Товар')}\n"
+            f"💳 <b>Цена:</b> <code>{esc(format_price_multi(new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price))}</code>"
+        )
+        await send_photo_or_text(target_chat, msg, image_url=image_to_use, reply_markup=kb)
+        notified = True
+
+    if update_fields:
+        await safe_update_tracked_item(item["id"], update_fields)
+
+    if notify_if_unchanged and not notified:
+        if new_price == DEFAULT_PRICE_PLACEHOLDER and not new_sizes:
+            await bot.send_message(
+                target_chat,
+                f"⚠️ Не удалось получить актуальные данные для <b>{esc(item.get('title'))}</b>.",
+            )
+        else:
+            effective_price = new_price if new_price != DEFAULT_PRICE_PLACEHOLDER else old_price
+            lines = [
+                f"✅ <b>{esc(item.get('title'))}</b> — цена без изменений: <code>{esc(format_price_multi(effective_price))}</code>"
+            ]
+            if new_in_stock is False:
+                lines.append("🔴 Сейчас нет в наличии.")
+            elif new_sizes:
+                matched = match_target_sizes(new_sizes, target_sizes)
+                if matched:
+                    lines.append(f"⭐ Твои размеры в наличии: <code>{esc(', '.join(matched))}</code>")
+                elif target_sizes:
+                    lines.append(f"🎯 Твои размеры (<code>{esc(', '.join(target_sizes))}</code>) пока отсутствуют.")
+                preview = ", ".join(new_sizes[:18]) + (" ..." if len(new_sizes) > 18 else "")
+                lines.append(f"👟 Все размеры ({len(new_sizes)}): <code>{esc(preview)}</code>")
+            await bot.send_message(target_chat, "\n".join(lines))
+
+    return {
+        "price_changed": price_changed,
+        "restocked": bool(newly_added_targets or newly_added_sizes or back_in_stock),
+        "target_hit": bool(newly_added_targets),
+    }
+
+
 @dp.callback_query(F.data.startswith("chk_"))
 async def manual_check_item(callback: types.CallbackQuery):
     item_id = callback.data.split("_", 1)[1]
-    await callback.answer("⏳ Проверяю цену...")
+    await callback.answer("⏳ Проверяю цену и размеры...")
     try:
         res = await db_exec(
             lambda: supabase.table("tracked_items")
@@ -866,69 +1407,217 @@ async def manual_check_item(callback: types.CallbackQuery):
         await callback.message.answer("❌ Товар не найден.")
         return
 
-    item = res.data[0]
-    new_price, new_image, _, _ = await fetch_product_data(item["url"])
+    await evaluate_and_notify_item(res.data[0], notify_if_unchanged=True, chat_id=callback.from_user.id)
 
-    # Backfill missing photo in DB if we found one now
-    image_to_use = item.get("image_url")
-    if not image_to_use and new_image:
-        image_to_use = new_image
-        await db_exec(
-            lambda: supabase.table("tracked_items").update({"image_url": new_image}).eq("id", item["id"]).execute()
+
+@dp.message(F.text == "🔄 Проверить всё")
+@dp.message(Command("checkall"))
+async def check_all_user_items(message: types.Message, state: FSMContext):
+    await state.clear()
+    try:
+        res = await db_exec(
+            lambda: supabase.table("tracked_items")
+            .select("*")
+            .eq("user_id", message.from_user.id)
+            .execute()
         )
-
-    if new_price == DEFAULT_PRICE_PLACEHOLDER:
-        await callback.message.answer(f"⚠️ Не удалось получить актуальную цену для <b>{esc(item.get('title'))}</b>.")
+    except Exception as e:
+        logger.error("DB checkall error: %s", e)
+        await message.answer("⚠️ Ошибка загрузки списка.", reply_markup=get_main_keyboard())
         return
 
-    old_amount, old_cur = parse_price_amount(item.get("last_price"))
-    new_amount, new_cur = parse_price_amount(new_price)
-    unchanged = (
-        old_amount is not None
-        and new_amount is not None
-        and old_cur == new_cur
-        and abs(old_amount - new_amount) < 0.01
-    ) or new_price == item.get("last_price")
-
-    if unchanged:
-        await callback.message.answer(
-            f"✅ Цена без изменений: <b>{esc(item.get('title'))}</b> — <code>{esc(format_price_multi(new_price))}</code>"
-        )
+    if not res.data:
+        await message.answer("📭 Список пуст.", reply_markup=get_main_keyboard())
         return
 
-    await db_exec(
-        lambda: supabase.table("tracked_items").update({"last_price": new_price}).eq("id", item["id"]).execute()
+    status_msg = await message.answer(f"⏳ Проверяю все твои товары ({len(res.data)} шт.)...")
+    changed_prices = 0
+    restocks = 0
+    for item in res.data:
+        try:
+            outcome = await evaluate_and_notify_item(item, notify_if_unchanged=False, chat_id=message.from_user.id)
+            if outcome["price_changed"]:
+                changed_prices += 1
+            if outcome["restocked"]:
+                restocks += 1
+        except Exception as e:
+            logger.warning("checkall item %s error: %s", item.get("id"), e)
+        await asyncio.sleep(0.5)
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ <b>Проверка завершена!</b>\n\n"
+        f"• Проверено товаров: <b>{len(res.data)}</b>\n"
+        f"• Изменений цены: <b>{changed_prices}</b>\n"
+        f"• Пополнений / рестоков: <b>{restocks}</b>",
+        reply_markup=get_main_keyboard(),
     )
-    msg = build_price_change_message(item, new_price)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ", url=item["url"])]])
-    await send_photo_or_text(callback.from_user.id, msg, image_url=image_to_use, reply_markup=kb)
 
 
-def build_price_change_message(item: dict, new_price: str) -> str:
-    old_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
-    old_amount, old_cur = parse_price_amount(old_price)
-    new_amount, new_cur = parse_price_amount(new_price)
+# --- Personal Keyword Alerts (/alert) ---
 
-    header = "🔔 <b>ЦЕНА ИЗМЕНИЛАСЬ!</b>"
-    diff_line = ""
-    if old_amount and new_amount and old_cur == new_cur:
-        pct = ((new_amount - old_amount) / old_amount) * 100
-        if new_amount < old_amount:
-            header = f"📉 <b>ЦЕНА СНИЗИЛАСЬ ({pct:.0f}%)!</b>"
-        elif new_amount > old_amount:
-            header = f"📈 <b>ЦЕНА ВЫРОСЛА (+{pct:.0f}%)</b>"
-        diff_line = f"\n💸 <b>Стало:</b> <code>{esc(format_price_multi(new_price))}</code>"
+@dp.message(F.text == "🔔 Алерты")
+@dp.message(Command("alert"))
+async def cmd_alerts(message: types.Message, state: FSMContext):
+    await state.clear()
+    parts = (message.text or "").split(maxsplit=1)
+    if (message.text or "").startswith("/alert") and len(parts) == 2 and parts[1].strip():
+        await add_user_alert(message, parts[1].strip())
+        return
+
+    try:
+        res = await db_exec(
+            lambda: supabase.table("user_alerts")
+            .select("*")
+            .eq("user_id", message.from_user.id)
+            .execute()
+        )
+    except Exception as e:
+        logger.error("DB user_alerts error: %s", e)
+        await message.answer(
+            "⚠️ Таблица <code>user_alerts</code> ещё не создана в Supabase. Выполни SQL-миграцию из <code>supabase_migration.sql</code>.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+
+    rows = res.data or []
+    buttons = [[InlineKeyboardButton(text="➕ Добавить слово", callback_data="add_alert")]]
+    for row in rows:
+        buttons.append([InlineKeyboardButton(text=f"❌ {row['keyword']}", callback_data=f"delalert_{row['id']}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if rows:
+        kw_list = ", ".join(f"<code>{esc(r['keyword'])}</code>" for r in rows)
+        text = f"🔔 <b>Твои личные алерты ({len(rows)}):</b>\n{kw_list}\n\nКак только в RSS появится дроп с этим словом — сразу пришлю в ЛС."
     else:
-        diff_line = f"\n💳 <b>Стало:</b> <code>{esc(format_price_multi(new_price))}</code>"
+        text = "🔔 <b>У тебя пока нет личных алертов.</b>\nНажми <b>➕ Добавить слово</b> или напиши <code>/alert salomon</code>."
+    await message.answer(text, reply_markup=kb)
 
-    return (
-        f"{header}\n\n"
-        f"🏷 <b>{esc(item.get('brand') or 'Бренд')}</b>\n"
-        f"📦 {esc(item.get('title') or 'Товар')}\n"
-        f"💳 <b>Было:</b> <code>{esc(old_price)}</code>"
-        f"{diff_line}"
+
+@dp.callback_query(F.data == "add_alert")
+async def start_add_alert(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(BotState.waiting_for_alert_keyword)
+    await callback.answer()
+    await callback.message.answer(
+        "🔔 <b>Введи ключевое слово или модель</b> (например: <code>p-6000</code>, <code>salomon</code>, <code>puffer</code>):",
+        reply_markup=get_cancel_keyboard(),
     )
 
+
+@dp.message(BotState.waiting_for_alert_keyword, ~F.text.startswith("/"), ~F.text.in_(MENU_BUTTONS))
+async def process_add_alert(message: types.Message, state: FSMContext):
+    await state.clear()
+    await add_user_alert(message, (message.text or "").strip())
+
+
+async def add_user_alert(message: types.Message, keyword: str) -> None:
+    kw = clean_text(keyword).lower()
+    if len(kw) < 2:
+        await message.answer("⚠️ Слово слишком короткое.", reply_markup=get_main_keyboard())
+        return
+    try:
+        await db_exec(
+            lambda: supabase.table("user_alerts")
+            .upsert({"user_id": message.from_user.id, "keyword": kw}, on_conflict="user_id,keyword")
+            .execute()
+        )
+        await message.answer(
+            f"✅ Алерт <code>{esc(kw)}</code> добавлен! Как только появится дроп с этим словом — пришлю сюда.",
+            reply_markup=get_main_keyboard(),
+        )
+    except Exception as e:
+        logger.error("DB insert alert error: %s", e)
+        await message.answer(
+            "⚠️ Не удалось сохранить алерт (убедись, что таблица <code>user_alerts</code> создана в Supabase).",
+            reply_markup=get_main_keyboard(),
+        )
+
+
+@dp.callback_query(F.data.startswith("delalert_"))
+async def delete_user_alert(callback: types.CallbackQuery):
+    alert_id = callback.data.split("_", 1)[1]
+    try:
+        await db_exec(
+            lambda: supabase.table("user_alerts")
+            .delete()
+            .eq("id", alert_id)
+            .eq("user_id", callback.from_user.id)
+            .execute()
+        )
+        await callback.answer("Алерт удалён!")
+        await callback.message.answer("🗑 Алерт удалён. Нажми <b>🔔 Алерты</b>, чтобы посмотреть обновлённый список.")
+    except Exception as e:
+        logger.error("DB delete alert error: %s", e)
+        await callback.answer("⚠️ Ошибка удаления.", show_alert=True)
+
+
+# --- Search Posted Deals (/search) ---
+
+@dp.message(F.text == "🔍 Поиск")
+@dp.message(Command("search"))
+async def cmd_search(message: types.Message, state: FSMContext):
+    await state.clear()
+    parts = (message.text or "").split(maxsplit=1)
+    if (message.text or "").startswith("/search") and len(parts) == 2 and parts[1].strip():
+        await run_deal_search(message, parts[1].strip())
+        return
+    await state.set_state(BotState.waiting_for_search_query)
+    await message.answer(
+        "🔍 <b>Что ищем среди последних дропов?</b>\nВведи бренд или модель (например: <code>nike</code>, <code>hoodie</code>, <code>salomon</code>):",
+        reply_markup=get_cancel_keyboard(),
+    )
+
+
+@dp.message(BotState.waiting_for_search_query, ~F.text.startswith("/"), ~F.text.in_(MENU_BUTTONS))
+async def process_search_query(message: types.Message, state: FSMContext):
+    await state.clear()
+    await run_deal_search(message, (message.text or "").strip())
+
+
+async def run_deal_search(message: types.Message, query: str) -> None:
+    q = clean_text(query)
+    if len(q) < 2:
+        await message.answer("⚠️ Запрос слишком короткий.", reply_markup=get_main_keyboard())
+        return
+    try:
+        res = await db_exec(
+            lambda: supabase.table("posted_deals")
+            .select("*")
+            .or_(f"title.ilike.%{q}%,brand.ilike.%{q}%")
+            .order("id", desc=True)
+            .limit(8)
+            .execute()
+        )
+    except Exception as e:
+        logger.error("DB search error: %s", e)
+        await message.answer("⚠️ Ошибка поиска в базе.", reply_markup=get_main_keyboard())
+        return
+
+    rows = res.data or []
+    if not rows:
+        await message.answer(f"🔎 По запросу <code>{esc(q)}</code> пока ничего не найдено.", reply_markup=get_main_keyboard())
+        return
+
+    lines = [f"🔍 <b>Последние дропы по запросу «{esc(q)}» ({len(rows)}):</b>\n"]
+    for idx, row in enumerate(rows, 1):
+        title = esc(row.get("title") or "Дроп")
+        brand = esc(row.get("brand") or "")
+        price = row.get("price")
+        url = row.get("url")
+        price_part = f" — <code>{esc(price)}</code>" if price else ""
+        if url:
+            lines.append(f"{idx}. <b>[{brand}]</b> <a href=\"{html.escape(url)}\">{title}</a>{price_part}")
+        else:
+            lines.append(f"{idx}. <b>[{brand}]</b> {title}{price_part}")
+
+    await message.answer("\n".join(lines), disable_web_page_preview=True, reply_markup=get_main_keyboard())
+
+
+# --- Background Loops ---
 
 async def check_personal_tracker():
     while True:
@@ -937,49 +1626,10 @@ async def check_personal_tracker():
             if res.data:
                 logger.info("🔍 Проверка персонального трекера: %d товаров", len(res.data))
                 for item in res.data:
-                    new_price, new_image, _, _ = await fetch_product_data(item["url"])
-                    image_to_use = item.get("image_url")
-                    if not image_to_use and new_image:
-                        image_to_use = new_image
-                        try:
-                            await db_exec(
-                                lambda i=item, img=new_image: supabase.table("tracked_items")
-                                .update({"image_url": img})
-                                .eq("id", i["id"])
-                                .execute()
-                            )
-                        except Exception:
-                            pass
-                    if new_price == DEFAULT_PRICE_PLACEHOLDER:
-                        await asyncio.sleep(1)
-                        continue
-
-                    old_amount, old_cur = parse_price_amount(item.get("last_price"))
-                    new_amount, new_cur = parse_price_amount(new_price)
-                    is_same = (
-                        old_amount is not None
-                        and new_amount is not None
-                        and old_cur == new_cur
-                        and abs(old_amount - new_amount) < 0.01
-                    ) or new_price == item.get("last_price")
-
-                    if not is_same:
-                        kb = InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ", url=item["url"])]]
-                        )
-                        msg = build_price_change_message(item, new_price)
-                        try:
-                            await send_photo_or_text(
-                                item["user_id"], msg, image_url=image_to_use, reply_markup=kb
-                            )
-                            await db_exec(
-                                lambda i=item, p=new_price: supabase.table("tracked_items")
-                                .update({"last_price": p})
-                                .eq("id", i["id"])
-                                .execute()
-                            )
-                        except Exception as e:
-                            logger.warning("⚠️ Не удалось уведомить пользователя %s: %s", item["user_id"], e)
+                    try:
+                        await evaluate_and_notify_item(item, notify_if_unchanged=False)
+                    except Exception as e:
+                        logger.warning("⚠️ Ошибка проверки товара %s: %s", item.get("id"), e)
                     await asyncio.sleep(1)
         except Exception as e:
             logger.error("⚠️ Ошибка персонального трекера: %s", e)
@@ -1007,6 +1657,30 @@ async def is_deal_already_posted(deal_id: str, title: str) -> bool:
     return False
 
 
+async def notify_matching_user_alerts(title: str, brand: str, post_text: str, image_url: str | None, kb: InlineKeyboardMarkup) -> None:
+    try:
+        res = await db_exec(lambda: supabase.table("user_alerts").select("user_id,keyword").execute())
+    except Exception:
+        return
+    if not res.data:
+        return
+
+    haystack = f"{title} {brand}".lower()
+    notified_users: set[int] = set()
+    for row in res.data:
+        uid = row["user_id"]
+        kw = (row.get("keyword") or "").lower().strip()
+        if not kw or uid in notified_users:
+            continue
+        if kw in haystack:
+            notified_users.add(uid)
+            alert_text = f"🔔 <b>Сработал твой алерт:</b> <code>{esc(kw)}</code>\n\n{post_text}"
+            try:
+                await send_photo_or_text(uid, alert_text, image_url=image_url, reply_markup=kb, disable_web_page_preview=False)
+            except Exception as e:
+                logger.debug("Alert DM error for %s: %s", uid, e)
+
+
 async def process_entry(entry, flag: str):
     title = clean_text(getattr(entry, "title", ""))
     main_link = getattr(entry, "link", "")
@@ -1023,6 +1697,14 @@ async def process_entry(entry, flag: str):
         return
 
     price = extract_price(title, summary)
+    discount_pct = extract_discount_pct(title, summary)
+    has_numeric_price = parse_price_amount(price)[0] is not None
+
+    # Filter out weak percentage-only deals (e.g. "10% off" with no concrete price)
+    if not has_numeric_price and discount_pct is not None and discount_pct < MIN_DISCOUNT_PCT:
+        return
+
+    promo_code = extract_promo_code(title, summary)
     target_link = extract_best_link(summary, main_link)
     image_url = extract_hd_image(entry, summary)
 
@@ -1039,18 +1721,50 @@ async def process_entry(entry, flag: str):
     except Exception:
         pass
 
+    # Insert into DB first to get row_id for deep-link "➕ Отслеживать" button
+    deal_row_id = None
+    try:
+        try:
+            ins = await db_exec(
+                lambda: supabase.table("posted_deals")
+                .insert({"deal_id": deal_id, "title": title, "brand": brand, "price": price, "url": target_link})
+                .execute()
+            )
+        except Exception:
+            ins = await db_exec(
+                lambda: supabase.table("posted_deals")
+                .insert({"deal_id": deal_id, "title": title, "brand": brand})
+                .execute()
+            )
+        if ins.data:
+            deal_row_id = ins.data[0].get("id")
+    except Exception as e:
+        logger.error("⚠️ Ошибка сохранения posted_deals: %s", e)
+
     price_with_multi = format_price_multi(price)
-    buttons = [[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]]
-    if main_link != target_link:
-        buttons.append([InlineKeyboardButton(text="🔗 Источник", url=main_link)])
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{discount_pct}%)</b>\n" if (discount_pct and discount_pct >= 50) else ""
+    promo_line = f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>" if promo_code else ""
 
     post_text = (
+        f"{top_badge}"
         f"<b>DROP SIGNAL | {brand_to_hashtag(brand)}</b>\n"
         f"{esc(flag)}\n\n"
         f"<b>{esc(title)}</b>\n"
         f"💳 <b>Цена:</b> {esc(price_with_multi)}"
+        f"{promo_line}"
     )
+
+    buttons = [[InlineKeyboardButton(text="🛒 Купить (1 клик)", url=target_link)]]
+    second_row = []
+    if main_link != target_link:
+        second_row.append(InlineKeyboardButton(text="🔗 Источник", url=main_link))
+    if BOT_USERNAME and deal_row_id:
+        second_row.append(
+            InlineKeyboardButton(text="➕ Отслеживать", url=f"https://t.me/{BOT_USERNAME}?start=track_{deal_row_id}")
+        )
+    if second_row:
+        buttons.append(second_row)
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     try:
         await send_photo_or_text(
@@ -1060,13 +1774,9 @@ async def process_entry(entry, flag: str):
             reply_markup=kb,
             disable_web_page_preview=False,
         )
-        await db_exec(
-            lambda: supabase.table("posted_deals")
-            .insert({"deal_id": deal_id, "title": title, "brand": brand})
-            .execute()
-        )
         remember_deal(deal_id, title)
         logger.info("✅ Опубликован дроп: [%s] %s", brand, title[:80])
+        await notify_matching_user_alerts(title, brand, post_text, image_url, kb)
         await asyncio.sleep(3)
     except Exception as e:
         logger.error("⚠️ Ошибка публикации поста: %s", e)
@@ -1142,8 +1852,15 @@ async def start_web_server() -> web.AppRunner:
 
 
 async def main():
-    global http_session
+    global http_session, BOT_USERNAME
     http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+        logger.info("🤖 Бот авторизован: @%s", BOT_USERNAME)
+    except Exception as e:
+        logger.warning("⚠️ Не удалось получить username бота: %s", e)
+
     await load_exchange_rates()
     web_runner = await start_web_server()
 
