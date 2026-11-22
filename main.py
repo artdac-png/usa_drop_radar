@@ -138,6 +138,7 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("joe's new balance", "Joes New Balance"),
     ("woot", "Woot"),
     ("shoebacca", "Shoebacca"),
+    ("shoebaca", "Shoebacca"),
     ("macy's", "Macy's"),
     ("macys", "Macy's"),
     ("gap", "Gap"),
@@ -172,6 +173,7 @@ STOP_WORDS_REGEX = re.compile(
 STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca+macys+gap+oldnavy&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=6pm+sierra+rei+finishline+joesnewbalance+footlocker+jdsports+zappos+nordstrom&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=shoebacca&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
