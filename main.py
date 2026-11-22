@@ -2085,6 +2085,8 @@ async def run_deal_search(message: types.Message, query: str) -> None:
         price = row.get("price")
         url = row.get("url")
         price_part = f" — <code>{esc(price)}</code>" if price else ""
+        if not url and str(row.get("deal_id") or "").startswith("http"):
+            url = row["deal_id"]
         if url:
             lines.append(f"{idx}. <b>[{brand}]</b> <a href=\"{html.escape(url)}\">{title}</a>{price_part}")
         else:
@@ -2950,6 +2952,8 @@ async def build_daily_digest_text() -> str | None:
         pct_tag = f" <b>(-{pct}%)</b>" if pct else ""
         price_tag = f" — <code>{esc(format_price_multi(price_str))}</code>" if price_str else ""
         url = row.get("url")
+        if not url and str(row.get("deal_id") or "").startswith("http"):
+            url = row["deal_id"]
         if url:
             lines.append(f"{idx}. <b>[{brand}]</b> <a href=\"{html.escape(url)}\">{title}</a>{pct_tag}{price_tag}")
         else:
