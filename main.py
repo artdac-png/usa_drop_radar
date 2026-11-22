@@ -1,5 +1,7 @@
 import asyncio
+import email
 import html
+import imaplib
 import json
 import logging
 import os
@@ -8,6 +10,8 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from email.header import decode_header
+from email.message import Message
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import aiohttp
@@ -42,10 +46,16 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+IMAP_HOST = os.getenv("IMAP_HOST", "imap.ukr.net")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 RADAR_STANDARD_INTERVAL = int(os.getenv("RADAR_STANDARD_INTERVAL", "600"))
 RADAR_REDDIT_INTERVAL = int(os.getenv("RADAR_REDDIT_INTERVAL", "900"))
 TRACKER_INTERVAL = int(os.getenv("TRACKER_INTERVAL", "10800"))
+EMAIL_CHECK_INTERVAL = int(os.getenv("EMAIL_CHECK_INTERVAL", "600"))
 MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "35"))
 MAX_PRICE_NO_DISCOUNT_USD = float(os.getenv("MAX_PRICE_NO_DISCOUNT_USD", "95"))
 DEAL_DEDUP_DAYS = int(os.getenv("DEAL_DEDUP_DAYS", "7"))
@@ -75,6 +85,15 @@ RECENT_TITLES_SET: set[str] = set()
 PROMO_TTL_SECONDS = 86400
 ACTIVE_STORE_PROMOS: dict[str, dict] = {}
 NOTIFIED_PROMOS: set[tuple[int, str, str]] = set()
+PENDING_EMAIL_PROMOS: dict[str, dict] = {}
+EMAIL_PROMO_SEQ = 0
+
+EMAIL_SERVICE_STOP_WORDS = (
+    "order confirmation", "your order", "has shipped", "out for delivery",
+    "has been delivered", "tracking number", "return label", "refund processed",
+    "reset your password", "password reset", "verification code", "verify your email",
+    "security alert", "sign-in attempt", "invoice #", "receipt for your",
+)
 
 
 class BotState(StatesGroup):
@@ -1352,6 +1371,7 @@ async def cmd_help(message: types.Message, state: FSMContext):
         "• /list или <b>📋 Мой список</b> — твои товары (цена, промокод, минимум, размеры)\n"
         "• /checkall или <b>🔄 Проверить всё</b> — проверить все товары сразу\n"
         "• /promo — сегодняшние промокоды (можно задать вручную: <code>/promo nike BFRIDAY 25</code>)\n"
+        "• /checkmail — проверить новые письма с промокодами на почте\n"
         "• /alert <code>слово</code> или <b>🔔 Алерты</b> — личные уведомления по ключевым словам\n"
         "• /search <code>nike</code> или <b>🔍 Поиск</b> — поиск по последним найденным дропам\n"
         "• /rates или <b>💱 Курсы валют</b> — актуальные курсы валют\n"
@@ -2346,6 +2366,308 @@ async def run_radar_reddit():
         await asyncio.sleep(RADAR_REDDIT_INTERVAL)
 
 
+def decode_mime_str(value: str | None) -> str:
+    if not value:
+        return ""
+    parts = []
+    for chunk, enc in decode_header(value):
+        if isinstance(chunk, bytes):
+            parts.append(chunk.decode(enc or "utf-8", errors="ignore"))
+        else:
+            parts.append(str(chunk))
+    return clean_text("".join(parts))
+
+
+def extract_email_body(msg: Message) -> tuple[str, str]:
+    """Return (plain_text, raw_html) from an email message."""
+    plain_parts, html_parts = [], []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get("Content-Disposition") or "").lower()
+            if "attachment" in disp:
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="ignore")
+            if ctype == "text/plain":
+                plain_parts.append(decoded)
+            elif ctype == "text/html":
+                html_parts.append(decoded)
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="ignore")
+            if msg.get_content_type() == "text/html":
+                html_parts.append(decoded)
+            else:
+                plain_parts.append(decoded)
+
+    raw_html = "\n".join(html_parts)
+    plain = "\n".join(plain_parts)
+    if not plain and raw_html:
+        stripped = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw_html, flags=re.S | re.I)
+        plain = clean_text(re.sub(r"<[^>]+>", " ", stripped))
+    return plain, raw_html
+
+
+def extract_email_store_link(raw_html: str) -> str | None:
+    if not raw_html:
+        return None
+    skip_kws = ("unsubscribe", "optout", "privacy", "manage", "preferences", "facebook.com", "instagram.com", "twitter.com", "tiktok.com", "youtube.com", "mailto:", "view-in-browser")
+    for url in re.findall(r'href=["\'](https?://[^"\']+)["\']', raw_html, re.IGNORECASE):
+        low = url.lower()
+        if any(sk in low for sk in skip_kws):
+            continue
+        if len(url) < 500:
+            return html.unescape(url)
+    return None
+
+
+def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
+    """Connect to IMAP (ukr.net), read up to `limit` UNSEEN messages, mark them Seen, and return parsed dicts."""
+    if not EMAIL_USER or not EMAIL_PASS:
+        return []
+    results = []
+    mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    try:
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("INBOX")
+        status, data = mail.search(None, "UNSEEN")
+        if status != "OK" or not data or not data[0]:
+            return []
+        msg_ids = data[0].split()[-limit:]
+        for mid in msg_ids:
+            try:
+                st, msg_data = mail.fetch(mid, "(RFC822)")
+                if st != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                    continue
+                msg = email.message_from_bytes(msg_data[0][1])
+                subject = decode_mime_str(msg.get("Subject"))
+                sender = decode_mime_str(msg.get("From"))
+                plain, raw_html = extract_email_body(msg)
+                mail.store(mid, "+FLAGS", "\\Seen")
+
+                combined_check = f"{subject} {plain[:600]}".lower()
+                if any(sw in combined_check for sw in EMAIL_SERVICE_STOP_WORDS):
+                    continue
+
+                # Strip Fwd:/Re: prefix for cleaner display
+                clean_subj = re.sub(r"^(?:(?:fwd?|re)\s*:\s*)+", "", subject, flags=re.IGNORECASE).strip() or "Промо от магазина"
+                brand = (
+                    find_matched_brand(clean_subj)
+                    or find_matched_brand(sender)
+                    or find_matched_brand(plain[:1500])
+                    or "Магазин"
+                )
+                promo_code = extract_promo_code(clean_subj, plain[:4000])
+                discount_pct = extract_discount_pct(clean_subj, plain[:4000])
+                fixed_disc, fixed_cur = extract_discount_fixed(clean_subj, plain[:4000])
+                link = extract_email_store_link(raw_html)
+
+                results.append({
+                    "subject": clean_subj,
+                    "sender": sender,
+                    "brand": brand,
+                    "promo_code": promo_code,
+                    "discount_pct": discount_pct,
+                    "fixed_disc": fixed_disc,
+                    "fixed_cur": fixed_cur,
+                    "link": link,
+                })
+            except Exception as e:
+                logger.warning("⚠️ Ошибка разбора письма %s: %s", mid, e)
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+    return results
+
+
+async def resolve_owner_user_id() -> int | None:
+    if ADMIN_USER_ID:
+        return ADMIN_USER_ID
+    try:
+        res = await db_exec(lambda: supabase.table("tracked_items").select("user_id").limit(1).execute())
+        if res.data:
+            return int(res.data[0]["user_id"])
+    except Exception:
+        pass
+    return None
+
+
+async def process_email_promos(target_user_id: int | None = None) -> int:
+    global EMAIL_PROMO_SEQ
+    if not EMAIL_USER or not EMAIL_PASS:
+        return 0
+    owner_id = target_user_id or await resolve_owner_user_id()
+    if not owner_id:
+        return 0
+
+    emails = await asyncio.to_thread(fetch_unread_emails_sync)
+    if not emails:
+        return 0
+
+    tracked_res = await db_exec(lambda: supabase.table("tracked_items").select("*").eq("user_id", owner_id).execute())
+    tracked_items = tracked_res.data or []
+
+    sent_count = 0
+    for em in emails:
+        EMAIL_PROMO_SEQ += 1
+        key = str(EMAIL_PROMO_SEQ)
+        if len(PENDING_EMAIL_PROMOS) > 200:
+            oldest_key = next(iter(PENDING_EMAIL_PROMOS))
+            PENDING_EMAIL_PROMOS.pop(oldest_key, None)
+        PENDING_EMAIL_PROMOS[key] = em
+
+        brand = em["brand"]
+        promo_code = em["promo_code"]
+        pct = em["discount_pct"]
+        fixed = em["fixed_disc"]
+        fixed_cur = em["fixed_cur"]
+
+        disc_desc = ""
+        if pct:
+            disc_desc = f" (-{pct}%)"
+        elif fixed and fixed_cur:
+            sym = {"USD": "$", "GBP": "£", "EUR": "€"}.get(fixed_cur, "$")
+            disc_desc = f" (-{sym}{fixed:.0f})"
+
+        lines = [
+            f"📩 <b>ПИСЬМО ОТ МАГАЗИНА | {esc(brand)}</b>",
+            f"<b>{esc(em['subject'])}</b>",
+        ]
+        if promo_code:
+            lines.append(f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>{disc_desc}")
+        elif disc_desc:
+            lines.append(f"\n🔥 <b>Скидка в письме:</b> <b>{disc_desc.strip(' ()')}</b>")
+
+        # Show discounted prices for matching items in user's tracked list
+        promo_obj = {"code": promo_code, "pct": pct, "fixed": fixed, "fixed_cur": fixed_cur} if (promo_code or pct or fixed) else None
+        brand_low = brand.lower()
+        matching_items = [
+            it for it in tracked_items
+            if (it.get("brand") or "").strip().lower() == brand_low
+            or (find_matched_brand(it.get("url")) or "").strip().lower() == brand_low
+        ]
+        if matching_items and promo_obj and (pct or fixed):
+            lines.append("\n<b>Твои товары из списка с этой скидкой:</b>")
+            for it in matching_items[:8]:
+                bp = it.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
+                dp_str = apply_promo_to_price(bp, promo_obj)
+                title_esc = esc(it.get("title") or "Товар")
+                url_esc = html.escape(it.get("url") or "")
+                if dp_str:
+                    lines.append(f"• <a href=\"{url_esc}\">{title_esc}</a>: <code>{esc(bp)}</code> ➡️ <b>{esc(dp_str)}</b>")
+
+        row1 = []
+        if promo_code and brand != "Магазин":
+            row1.append(InlineKeyboardButton(text="✅ Применить к списку", callback_data=f"emapply_{key}"))
+        if CHANNEL_ID:
+            row1.append(InlineKeyboardButton(text="📢 В канал", callback_data=f"empub_{key}"))
+        buttons = []
+        if row1:
+            buttons.append(row1)
+        if em.get("link"):
+            buttons.append([InlineKeyboardButton(text="🛒 Открыть магазин", url=em["link"])])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+        try:
+            await bot.send_message(owner_id, "\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
+            sent_count += 1
+        except Exception as e:
+            logger.warning("⚠️ Не удалось отправить письмо-промо в ЛС: %s", e)
+
+    return sent_count
+
+
+@dp.callback_query(F.data.startswith("emapply_"))
+async def cb_apply_email_promo(callback: types.CallbackQuery):
+    key = callback.data.split("_", 1)[1]
+    em = PENDING_EMAIL_PROMOS.get(key)
+    if not em or not em.get("promo_code"):
+        await callback.answer("⚠️ Промокод устарел.", show_alert=True)
+        return
+    brand = em["brand"]
+    register_store_promo(
+        brand,
+        em["promo_code"],
+        pct=em.get("discount_pct"),
+        fixed=em.get("fixed_disc"),
+        fixed_cur=em.get("fixed_cur"),
+        source="почта",
+    )
+    await callback.answer(f"✅ Код {em['promo_code']} применён для {brand}!", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("empub_"))
+async def cb_publish_email_promo(callback: types.CallbackQuery):
+    key = callback.data.split("_", 1)[1]
+    em = PENDING_EMAIL_PROMOS.get(key)
+    if not em:
+        await callback.answer("⚠️ Данные письма устарели.", show_alert=True)
+        return
+    if not CHANNEL_ID:
+        await callback.answer("⚠️ CHANNEL_ID не задан.", show_alert=True)
+        return
+    brand = em["brand"]
+    lines = [
+        f"<b>PROMO SIGNAL | {brand_to_hashtag(brand)}</b>",
+        "",
+        f"<b>{esc(em['subject'])}</b>",
+    ]
+    if em.get("promo_code"):
+        disc = f" (-{em['discount_pct']}%)" if em.get("discount_pct") else ""
+        lines.append(f"🎟 <b>Промокод:</b> <code>{esc(em['promo_code'])}</code>{disc}")
+    elif em.get("discount_pct"):
+        lines.append(f"🔥 <b>Скидка:</b> <b>-{em['discount_pct']}%</b>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Перейти в магазин", url=em["link"])]]) if em.get("link") else None
+    try:
+        await bot.send_message(CHANNEL_ID, "\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
+        await callback.answer("📢 Опубликовано в канал!", show_alert=True)
+    except Exception as e:
+        logger.error("Publish email promo error: %s", e)
+        await callback.answer("⚠️ Ошибка публикации.", show_alert=True)
+
+
+@dp.message(Command("checkmail"))
+async def cmd_checkmail(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not EMAIL_USER or not EMAIL_PASS:
+        await message.answer("⚠️ Почта не настроена (нет <code>EMAIL_USER</code> / <code>EMAIL_PASS</code> в <code>.env</code>).")
+        return
+    status = await message.answer("⏳ Проверяю непрочитанные письма на почте...")
+    try:
+        count = await process_email_promos(target_user_id=message.from_user.id)
+    except Exception as e:
+        logger.error("Manual checkmail error: %s", e)
+        await status.edit_text(f"⚠️ Ошибка подключения к почте: <code>{esc(str(e))}</code>")
+        return
+    try:
+        await status.delete()
+    except Exception:
+        pass
+    if count == 0:
+        await message.answer("📭 Новых непрочитанных писем от магазинов пока нет.", reply_markup=get_main_keyboard())
+    else:
+        await message.answer(f"✅ Обработано новых писем: <b>{count}</b>", reply_markup=get_main_keyboard())
+
+
+async def run_email_watcher():
+    while True:
+        try:
+            count = await process_email_promos()
+            if count:
+                logger.info("📩 Обработано %d писем с почты %s", count, EMAIL_USER)
+        except Exception as e:
+            logger.warning("⚠️ Ошибка проверки почты (%s): %s", IMAP_HOST, e)
+        await asyncio.sleep(EMAIL_CHECK_INTERVAL)
+
+
 async def update_rates_loop():
     while True:
         await asyncio.sleep(14400)
@@ -2392,6 +2714,10 @@ async def main():
         tasks.append(asyncio.create_task(run_radar_reddit()))
     else:
         logger.warning("⚠️ CHANNEL_ID не задан — публикация RSS-дропов в канал отключена.")
+
+    if EMAIL_USER and EMAIL_PASS:
+        tasks.append(asyncio.create_task(run_email_watcher()))
+        logger.info("📩 Мониторинг почты включён (%s @ %s)", EMAIL_USER, IMAP_HOST)
 
     logger.info("🚀 Бот запущен!")
     try:
