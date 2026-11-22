@@ -6,6 +6,8 @@ import os
 import re
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import aiohttp
@@ -45,6 +47,7 @@ RADAR_STANDARD_INTERVAL = int(os.getenv("RADAR_STANDARD_INTERVAL", "600"))
 RADAR_REDDIT_INTERVAL = int(os.getenv("RADAR_REDDIT_INTERVAL", "900"))
 TRACKER_INTERVAL = int(os.getenv("TRACKER_INTERVAL", "10800"))
 MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "20"))
+DEAL_DEDUP_DAYS = int(os.getenv("DEAL_DEDUP_DAYS", "7"))
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise RuntimeError("❌ Ошибка: Не заданы переменные окружения (BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY)!")
@@ -1934,7 +1937,45 @@ async def check_personal_tracker():
         await asyncio.sleep(TRACKER_INTERVAL)
 
 
-async def is_deal_already_posted(deal_id: str, title: str) -> bool:
+def normalize_deal_title(title: str) -> str:
+    """Strip prices, sizes, promo/shipping tails, and bracket tags to isolate the core product name."""
+    t = clean_text(title).lower()
+    t = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", t)
+    t = re.sub(r"[$£€]\s*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?\s*[$£€]", " ", t)
+    t = re.sub(r"\b\d{1,2}\s*%\s*(?:off|rabatt)?\b", " ", t)
+    t = re.sub(r"\b(?:free shipping|free pickup|ohne cb|mit code|w/\s*code|plus shipping|fs on)\b.*$", " ", t)
+    t = re.sub(r"\b(?:gr[oö][sß]e|size|sizes)\b[^|•,-]*", " ", t)
+    t = re.sub(r"\b\d{2}(?:\.\d)?\s*[-–]\s*\d{2}(?:\.\d)?\b", " ", t)
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def normalize_url_for_dedup(url: str | None) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url.strip())
+    return f"{parsed.netloc.lower()}{parsed.path.rstrip('/').lower()}"
+
+
+def is_similar_product(title_a: str, title_b: str) -> bool:
+    na = normalize_deal_title(title_a)
+    nb = normalize_deal_title(title_b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if SequenceMatcher(None, na, nb).ratio() >= 0.78:
+        return True
+    toks_a = {w for w in na.split() if len(w) > 1}
+    toks_b = {w for w in nb.split() if len(w) > 1}
+    if len(toks_a) >= 3 and len(toks_b) >= 3:
+        overlap = len(toks_a & toks_b) / max(len(toks_a), len(toks_b))
+        if overlap >= 0.72:
+            return True
+    return False
+
+
+async def is_deal_already_posted(deal_id: str, title: str, brand: str = "", target_link: str = "") -> bool:
     if deal_id in RECENT_DEAL_IDS_SET or title in RECENT_TITLES_SET:
         return True
     try:
@@ -1944,12 +1985,25 @@ async def is_deal_already_posted(deal_id: str, title: str) -> bool:
         if res_id.data:
             remember_deal(deal_id, title)
             return True
-        res_title = await db_exec(
-            lambda: supabase.table("posted_deals").select("id").eq("title", title).limit(1).execute()
+
+        since_iso = (datetime.now(timezone.utc) - timedelta(days=DEAL_DEDUP_DAYS)).isoformat()
+        res_recent = await db_exec(
+            lambda: supabase.table("posted_deals")
+            .select("title,url")
+            .eq("brand", brand)
+            .gte("created_at", since_iso)
+            .order("id", desc=True)
+            .limit(150)
+            .execute()
         )
-        if res_title.data:
-            remember_deal(deal_id, title)
-            return True
+        norm_target = normalize_url_for_dedup(target_link)
+        for row in res_recent.data or []:
+            if norm_target and row.get("url") and normalize_url_for_dedup(row["url"]) == norm_target:
+                remember_deal(deal_id, title)
+                return True
+            if row.get("title") and is_similar_product(title, row["title"]):
+                remember_deal(deal_id, title)
+                return True
     except Exception as e:
         logger.warning("⚠️ Ошибка проверки дубликата в БД: %s", e)
     return False
@@ -2058,7 +2112,8 @@ async def process_entry(entry, flag: str):
         )
 
     deal_id = getattr(entry, "id", main_link)
-    if await is_deal_already_posted(deal_id, title):
+    target_link = extract_best_link(summary, main_link)
+    if await is_deal_already_posted(deal_id, title, brand=brand, target_link=target_link):
         return
 
     if is_new_promo and promo_code:
@@ -2073,7 +2128,6 @@ async def process_entry(entry, flag: str):
     if not has_numeric_price and discount_pct is not None and discount_pct < MIN_DISCOUNT_PCT:
         return
 
-    target_link = extract_best_link(summary, main_link)
     image_url = extract_hd_image(entry, summary)
 
     try:
