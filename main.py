@@ -841,8 +841,20 @@ async def fetch_adidas_sizes(url: str, session: AsyncSession) -> tuple[list[str]
 
 
 def extract_generic_sizes(page_html: str) -> list[str]:
-    """Extract in-stock sizes from JSON-LD hasVariant/offers or Shopify variants for clothing & footwear."""
+    """Extract in-stock sizes from Gap Inc. buybox HTML, JSON-LD hasVariant/offers, or Shopify variants."""
     found: list[str] = []
+
+    # 0. Gap / Gap Factory / Old Navy / Banana Republic / Athleta buybox size labels
+    for sz, disabled in re.findall(
+        r'for=["\']pdp_buybox_dimension_([^"\']+)["\'][^>]{0,120}aria-disabled=["\'](true|false)["\']',
+        page_html,
+        re.IGNORECASE,
+    ):
+        if disabled.lower() == "false" and sz.strip():
+            found.append(sz.strip())
+    if found:
+        return _dedupe_preserve_order(found)[:30]
+
     # 1. JSON-LD <script type="application/ld+json">
     for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page_html, re.S | re.I):
         try:
