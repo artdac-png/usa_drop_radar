@@ -90,7 +90,7 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("converse", "Converse"),
     ("lacoste", "Lacoste"),
     ("tommy hilfiger", "Tommy Hilfiger"),
-    ("tommy", "Tommy Hilfiger"),
+    ("tommy jeans", "Tommy Hilfiger"),
     ("calvin klein", "Calvin Klein"),
     ("calvin", "Calvin Klein"),
     ("guess", "Guess"),
@@ -101,7 +101,6 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("levis", "Levi's"),
     ("levi", "Levi's"),
     ("hugo boss", "Hugo Boss"),
-    ("boss", "Hugo Boss"),
     ("zara", "Zara"),
     ("mango", "Mango"),
     ("massimo dutti", "Massimo Dutti"),
@@ -142,7 +141,6 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("shop simon", "Shop Simon"),
     ("joes new balance", "Joes New Balance"),
     ("joe's new balance", "Joes New Balance"),
-    ("woot", "Woot"),
     ("shoebacca", "Shoebacca"),
     ("shoebaca", "Shoebacca"),
     ("macy's", "Macy's"),
@@ -168,6 +166,11 @@ EXCLUDE_STOP_WORDS = [
     "gs", "ps", "td", "preschool", "grade school",
     "expired", "dead deal", "sold out", "deal ended", "ended", "no longer available",
     "keyboard", "wagon", "gaming", "computer", "mouse", "toy", "toys", "tools", "kitchen", "vacuum", "printer",
+    "controller", "nintendo", "switch", "playstation", "ps5", "ps4", "xbox", "mario", "luigi", "lego", "console",
+    "coffee", "coffeeware", "nespresso", "starbucks", "espresso", "tea", "snack", "snacks", "grocery", "food", "candy", "chocolate",
+    "mattress", "pillow", "furniture", "bedding", "blanket", "towel", "luggage", "suitcase",
+    "pet", "dog", "cat", "vitamin", "supplement", "protein", "diaper", "stroller", "tire",
+    "battery", "charger", "cable", "router", "camera", "lens", "drone", "guitar", "pedal",
     "dehumidifier", "frigidaire", "air filter", "appliance", "heater", "cooler", "fridge", "refrigerator", "washing", "dryer", "microwave", "oven", "blender",
 ]
 
@@ -177,13 +180,14 @@ STOP_WORDS_REGEX = re.compile(
 )
 
 STANDARD_RSS_SOURCES = [
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike+jordan+adidas+lacoste+tommy+calvin+asics+salomon+saucony+mizuno+hoka+onrunning+levis+northface+shoebacca+macys+gap+oldnavy&rss=1"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=6pm+sierra+rei+finishline+joesnewbalance+footlocker+jdsports+zappos+nordstrom&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=shoebacca&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=adidas&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=new+balance&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nordstrom+rack&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/fashion"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://www.bradsdeals.com/rss/coupons"},
-    {"flag": "🇺🇸 [США / US]", "url": "https://rss.couponcabin.com/coupons/clothing-and-apparel.xml"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/trainers"},
@@ -2161,22 +2165,32 @@ async def process_entry(entry, flag: str):
 async def fetch_feed(source: dict):
     url = source["url"]
     flag = source["flag"]
-    if not http_session:
+    raw_xml = ""
+    try:
+        async with AsyncSession() as s:
+            resp = await s.get(url, impersonate="chrome", timeout=15)
+            if resp.status_code == 200 and resp.text:
+                raw_xml = resp.text
+            elif resp.status_code in (403, 429) and GAS_PROXY_URL and http_session:
+                async with http_session.get(
+                    GAS_PROXY_URL,
+                    params={"url": url, "raw": "1"},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as g_resp:
+                    if g_resp.status == 200:
+                        raw_xml = await g_resp.text()
+            else:
+                logger.debug("RSS %s вернул статус %d", url, resp.status_code)
+    except Exception as e:
+        logger.debug("Ошибка загрузки RSS %s: %s", url, e)
+
+    if not raw_xml:
         return [], flag
     try:
-        async with http_session.get(
-            url,
-            headers=RSS_HEADERS,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            if resp.status != 200:
-                logger.debug("RSS %s вернул статус %d", url, resp.status)
-                return [], flag
-            raw_xml = await resp.text()
         feed = await asyncio.to_thread(feedparser.parse, raw_xml)
         return feed.entries, flag
     except Exception as e:
-        logger.debug("Ошибка загрузки RSS %s: %s", url, e)
+        logger.debug("Ошибка парсинга RSS %s: %s", url, e)
         return [], flag
 
 

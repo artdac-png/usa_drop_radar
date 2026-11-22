@@ -11,6 +11,25 @@ function doGet(e) {
     return jsonResponse({ status: "error", message: "Missing url parameter" });
   }
 
+  // Raw RSS/XML pass-through for feeds that block datacenter IPs (403/429)
+  if (e && e.parameter && e.parameter.raw === "1") {
+    try {
+      var rawResp = UrlFetchApp.fetch(url, {
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; USADropRadarRSS/2.0)",
+          "Accept": "application/rss+xml, application/xml, text/xml, */*"
+        }
+      });
+      return ContentService
+        .createTextOutput(rawResp.getContentText())
+        .setMimeType(ContentService.MimeType.XML);
+    } catch (rawErr) {
+      return ContentService.createTextOutput("").setMimeType(ContentService.MimeType.TEXT);
+    }
+  }
+
   try {
     var result = scrapeProduct(url);
     return jsonResponse(result);
