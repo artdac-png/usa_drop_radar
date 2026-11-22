@@ -1975,21 +1975,31 @@ def is_similar_product(title_a: str, title_b: str) -> bool:
     return False
 
 
-async def is_deal_already_posted(deal_id: str, title: str, brand: str = "", target_link: str = "") -> bool:
+def is_price_drop(old_price_str: str | None, new_price_str: str | None) -> bool:
+    """Return True if new_price is strictly lower than old_price in the same currency (by > 0.50)."""
+    old_amt, old_cur = parse_price_amount(old_price_str)
+    new_amt, new_cur = parse_price_amount(new_price_str)
+    if old_amt is not None and new_amt is not None and old_cur == new_cur:
+        return new_amt < (old_amt - 0.5)
+    return False
+
+
+async def is_deal_already_posted(deal_id: str, title: str, brand: str = "", target_link: str = "", new_price: str = "") -> tuple[bool, str | None]:
+    """Return (is_duplicate, previous_price_if_dropped). Blocks same product for DEAL_DEDUP_DAYS unless price dropped."""
     if deal_id in RECENT_DEAL_IDS_SET or title in RECENT_TITLES_SET:
-        return True
+        return True, None
     try:
         res_id = await db_exec(
             lambda: supabase.table("posted_deals").select("id").eq("deal_id", deal_id).limit(1).execute()
         )
         if res_id.data:
             remember_deal(deal_id, title)
-            return True
+            return True, None
 
         since_iso = (datetime.now(timezone.utc) - timedelta(days=DEAL_DEDUP_DAYS)).isoformat()
         res_recent = await db_exec(
             lambda: supabase.table("posted_deals")
-            .select("title,url")
+            .select("title,url,price")
             .eq("brand", brand)
             .gte("created_at", since_iso)
             .order("id", desc=True)
@@ -1998,15 +2008,17 @@ async def is_deal_already_posted(deal_id: str, title: str, brand: str = "", targ
         )
         norm_target = normalize_url_for_dedup(target_link)
         for row in res_recent.data or []:
-            if norm_target and row.get("url") and normalize_url_for_dedup(row["url"]) == norm_target:
+            same_url = bool(norm_target and row.get("url") and normalize_url_for_dedup(row["url"]) == norm_target)
+            same_model = bool(row.get("title") and is_similar_product(title, row["title"]))
+            if same_url or same_model:
+                prev_price = row.get("price")
+                if is_price_drop(prev_price, new_price):
+                    return False, prev_price
                 remember_deal(deal_id, title)
-                return True
-            if row.get("title") and is_similar_product(title, row["title"]):
-                remember_deal(deal_id, title)
-                return True
+                return True, None
     except Exception as e:
         logger.warning("⚠️ Ошибка проверки дубликата в БД: %s", e)
-    return False
+    return False, None
 
 
 async def notify_matching_user_alerts(title: str, brand: str, post_text: str, image_url: str | None, kb: InlineKeyboardMarkup) -> None:
@@ -2113,7 +2125,11 @@ async def process_entry(entry, flag: str):
 
     deal_id = getattr(entry, "id", main_link)
     target_link = extract_best_link(summary, main_link)
-    if await is_deal_already_posted(deal_id, title, brand=brand, target_link=target_link):
+    price = extract_price(title, summary)
+    already_posted, prev_price = await is_deal_already_posted(
+        deal_id, title, brand=brand, target_link=target_link, new_price=price
+    )
+    if already_posted:
         return
 
     if is_new_promo and promo_code:
@@ -2121,7 +2137,6 @@ async def process_entry(entry, flag: str):
         if promo_obj:
             await notify_tracked_users_about_promo(brand, promo_obj)
 
-    price = extract_price(title, summary)
     has_numeric_price = parse_price_amount(price)[0] is not None
 
     # Filter out weak percentage-only deals (e.g. "10% off" with no concrete price)
@@ -2165,9 +2180,11 @@ async def process_entry(entry, flag: str):
 
     price_with_multi = format_price_multi(price)
     top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{discount_pct}%)</b>\n" if (discount_pct and discount_pct >= 50) else ""
+    drop_note = f"📉 <b>ЦЕНА СТАЛА ЕЩЁ НИЖЕ (было {esc(prev_price)})!</b>\n" if prev_price else ""
     promo_line = f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>" if promo_code else ""
 
     post_text = (
+        f"{drop_note}"
         f"{top_badge}"
         f"<b>DROP SIGNAL | {brand_to_hashtag(brand)}</b>\n"
         f"{esc(flag)}\n\n"
