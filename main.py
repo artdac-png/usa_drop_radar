@@ -2431,6 +2431,29 @@ def extract_email_store_link(raw_html: str) -> str | None:
     return None
 
 
+def extract_promo_validity(subject: str, body: str) -> str | None:
+    """Extract promo validity dates like '12/2-12/7', 'Ends Nov 30', 'Valid through 12/7', 'Expires 11/29/26'."""
+    text = f"{subject} {body[:4000]}"
+    months = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    date_tok = rf"(?:\d{{1,2}}[/.]\d{{1,2}}(?:[/.]\d{{2,4}})?|{months}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{4}})?)"
+
+    # 1. Explicit date range like "12/2-12/7" or "Nov 25 - Dec 2"
+    m_range = re.search(rf"\b({date_tok}\s*[-–—]\s*{date_tok})\b", text, re.IGNORECASE)
+    if m_range:
+        return clean_text(m_range.group(1))
+
+    # 2. Explicit expiration phrases like "Ends 11/30", "Valid through Dec 7", "Expires 12/7"
+    m_end = re.search(
+        rf"\b(?:ends?|offer\s+ends?|valid\s+(?:through|thru|until)|expires?(?:\s+on)?|redeem\s+by|действует\s+до|до)\s*[:\-]?\s*({date_tok})\b",
+        text,
+        re.IGNORECASE,
+    )
+    if m_end:
+        return f"до {clean_text(m_end.group(1))}"
+
+    return None
+
+
 def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
     """Connect to IMAP (ukr.net), read up to `limit` UNSEEN messages, mark them Seen, and return parsed dicts."""
     if not EMAIL_USER or not EMAIL_PASS:
@@ -2472,6 +2495,7 @@ def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
                     continue
                 discount_pct = extract_discount_pct(clean_subj, plain[:8000])
                 fixed_disc, fixed_cur = extract_discount_fixed(clean_subj, plain[:8000])
+                valid_until = extract_promo_validity(clean_subj, plain[:8000])
                 link = extract_email_store_link(raw_html)
 
                 results.append({
@@ -2482,6 +2506,7 @@ def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
                     "discount_pct": discount_pct,
                     "fixed_disc": fixed_disc,
                     "fixed_cur": fixed_cur,
+                    "valid_until": valid_until,
                     "link": link,
                 })
             except Exception as e:
@@ -2551,6 +2576,8 @@ async def process_email_promos(target_user_id: int | None = None) -> int:
             lines.append(f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>{disc_desc}")
         elif disc_desc:
             lines.append(f"\n🔥 <b>Скидка в письме:</b> <b>{disc_desc.strip(' ()')}</b>")
+        if em.get("valid_until"):
+            lines.append(f"⏳ <b>Действует:</b> <code>{esc(em['valid_until'])}</code>")
 
         # Show discounted prices for matching items in user's tracked list
         promo_obj = {"code": promo_code, "pct": pct, "fixed": fixed, "fixed_cur": fixed_cur} if (promo_code or pct or fixed) else None
@@ -2631,6 +2658,8 @@ async def cb_publish_email_promo(callback: types.CallbackQuery):
         lines.append(f"🎟 <b>Промокод:</b> <code>{esc(em['promo_code'])}</code>{disc}")
     elif em.get("discount_pct"):
         lines.append(f"🔥 <b>Скидка:</b> <b>-{em['discount_pct']}%</b>")
+    if em.get("valid_until"):
+        lines.append(f"⏳ <b>Действует:</b> <code>{esc(em['valid_until'])}</code>")
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Перейти в магазин", url=em["link"])]]) if em.get("link") else None
     try:
         await bot.send_message(CHANNEL_ID, "\n".join(lines), reply_markup=kb, disable_web_page_preview=True)
