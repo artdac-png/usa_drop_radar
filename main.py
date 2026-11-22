@@ -591,6 +591,41 @@ async def delete_promo_from_db(brand_key: str) -> None:
         pass
 
 
+OFFICIAL_BRAND_DOMAINS: dict[str, tuple[str, ...]] = {
+    "nike": ("nike.com",),
+    "jordan": ("nike.com",),
+    "adidas": ("adidas.",),
+    "puma": ("puma.com",),
+    "new balance": ("newbalance.com", "joesnewbalanceoutlet.com"),
+    "under armour": ("underarmour.",),
+    "converse": ("converse.com",),
+    "lacoste": ("lacoste.com",),
+    "tommy hilfiger": ("tommy.com",),
+    "calvin klein": ("calvinklein.",),
+    "levi's": ("levi.com",),
+    "hugo boss": ("hugoboss.com",),
+    "asics": ("asics.com",),
+    "salomon": ("salomon.com",),
+    "saucony": ("saucony.com",),
+    "hoka": ("hoka.com",),
+    "on running": ("on.com", "on-running.com"),
+    "the north face": ("thenorthface.com",),
+    "gap": ("gap.com", "gapfactory.com"),
+    "old navy": ("oldnavy.gap.com", "oldnavy.com"),
+    "ugg": ("ugg.com",),
+}
+
+
+def is_official_brand_url(brand: str, url: str) -> bool:
+    host = urlparse(url or "").netloc.lower()
+    if not host:
+        return False
+    domains = OFFICIAL_BRAND_DOMAINS.get(brand.strip().lower())
+    if not domains:
+        return False
+    return any(d in host for d in domains)
+
+
 def _promo_source_priority(source: str | None) -> int:
     s = (source or "").lower()
     if s in ("вручную", "почта"):
@@ -2300,12 +2335,12 @@ async def process_entry(entry, flag: str):
     fixed_disc, fixed_cur = extract_discount_fixed(title, summary)
     promo_code = extract_promo_code(title, summary)
 
-    # Only register RSS promo for a brand if it's not a 3rd-party department store coupon (e.g. Kohl's/Macy's/JCPenney)
-    third_party_retailers = ("kohl's", "kohls", "macy's", "macys", "jcpenney", "belk", "dillard", "nordstrom", "zappos", "6pm", "sierra", "rei ", "dick's", "dicks", "foot locker", "finish line", "jd sports", "champs", "hibbett", "dtlr")
-    is_third_party_promo = any(rt in title.lower() for rt in third_party_retailers)
+    deal_id = getattr(entry, "id", main_link)
+    target_link = extract_best_link(summary, main_link)
 
+    # Register RSS promo ONLY if the deal links directly to the brand's official store (never leak 3rd-party store codes)
     is_new_promo = False
-    if promo_code and not is_third_party_promo:
+    if promo_code and is_official_brand_url(brand, target_link):
         is_new_promo = register_store_promo(
             brand,
             promo_code,
@@ -2315,8 +2350,6 @@ async def process_entry(entry, flag: str):
             source="RSS",
         )
 
-    deal_id = getattr(entry, "id", main_link)
-    target_link = extract_best_link(summary, main_link)
     price = extract_price(title, summary)
     already_posted, prev_price = await is_deal_already_posted(
         deal_id, title, brand=brand, target_link=target_link, new_price=price
