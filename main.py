@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -65,6 +66,11 @@ RECENT_DEAL_IDS: deque[str] = deque(maxlen=1000)
 RECENT_DEAL_IDS_SET: set[str] = set()
 RECENT_TITLES: deque[str] = deque(maxlen=1000)
 RECENT_TITLES_SET: set[str] = set()
+
+# Today's active store/brand promo codes (TTL = 24h), populated from RSS coupon feeds & store pages
+PROMO_TTL_SECONDS = 86400
+ACTIVE_STORE_PROMOS: dict[str, dict] = {}
+NOTIFIED_PROMOS: set[tuple[int, str, str]] = set()
 
 
 class BotState(StatesGroup):
@@ -389,6 +395,130 @@ def extract_discount_pct(title: str, summary: str) -> int | None:
         if 5 <= int(m) <= 95
     ]
     return max(pcts) if pcts else None
+
+
+def extract_discount_fixed(title: str, summary: str) -> tuple[float | None, str | None]:
+    """Extract fixed discount like '$20 off' or '€15 off'."""
+    text = f"{title} {summary}"
+    m = re.search(r"([$£€])\s*(\d+(?:\.\d{1,2})?)\s*off\b", text, re.IGNORECASE)
+    if m:
+        cur_map = {"$": "USD", "£": "GBP", "€": "EUR"}
+        return float(m.group(2)), cur_map.get(m.group(1))
+    return None, None
+
+
+def extract_page_promo(page_html: str) -> dict | None:
+    """Extract an active store promo code + discount from visible text on a product page."""
+    if not page_html:
+        return None
+    visible = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", page_html, flags=re.S | re.I)
+    visible = clean_text(re.sub(r"<[^>]+>", " ", visible))
+    patterns = [
+        r"(?:extra\s+|take\s+|get\s+|save\s+)?(\d{1,2})\s*%\s*off.{0,70}?(?:use\s+|with\s+|w/\s*)?(?:promo\s+|coupon\s+)?code[:\s\"']+([A-Z0-9][A-Z0-9_-]{2,18})\b",
+        r"(?:use\s+|with\s+|w/\s*)?(?:promo\s+|coupon\s+)?code[:\s\"']+([A-Z0-9][A-Z0-9_-]{2,18})\b.{0,70}?(?:for\s+|to\s+get\s+|to\s+save\s+)?(?:extra\s+)?(\d{1,2})\s*%\s*off",
+    ]
+    for idx, pat in enumerate(patterns):
+        for match in re.finditer(pat, visible, re.IGNORECASE):
+            if idx == 0:
+                pct = int(match.group(1))
+                raw_code = match.group(2)
+            else:
+                raw_code = match.group(1)
+                pct = int(match.group(2))
+            code = raw_code.strip().upper()
+            if code in PROMO_STOP_WORDS or not (5 <= pct <= 80):
+                continue
+            if any(ch.isdigit() for ch in code) or raw_code.isupper():
+                return {"code": code, "pct": pct, "fixed": None, "fixed_cur": None, "source": "сайт магазина", "ts": time.time()}
+    return None
+
+
+def register_store_promo(
+    brand: str,
+    code: str,
+    pct: int | None = None,
+    fixed: float | None = None,
+    fixed_cur: str | None = None,
+    source: str = "RSS",
+) -> bool:
+    """Store today's promo for a brand. Returns True if it's a newly discovered promo code."""
+    if not brand or not code:
+        return False
+    key = brand.strip().lower()
+    now = time.time()
+    existing = ACTIVE_STORE_PROMOS.get(key)
+    if existing and (now - existing["ts"]) < PROMO_TTL_SECONDS:
+        if existing["code"] == code:
+            if pct and (not existing.get("pct") or pct > existing["pct"]):
+                existing["pct"] = pct
+            existing["ts"] = now
+            return False
+        # Keep the better percentage discount if another code is already active today
+        if existing.get("pct") and pct and pct < existing["pct"]:
+            return False
+
+    ACTIVE_STORE_PROMOS[key] = {
+        "code": code,
+        "pct": pct,
+        "fixed": fixed,
+        "fixed_cur": fixed_cur,
+        "source": source,
+        "ts": now,
+    }
+    return True
+
+
+def get_active_promo_for_item(item: dict, page_promo: dict | None = None) -> dict | None:
+    if page_promo and page_promo.get("code"):
+        return page_promo
+    now = time.time()
+    candidates = []
+    if item.get("brand"):
+        candidates.append(item["brand"].strip().lower())
+    url_brand = find_matched_brand(item.get("url"))
+    if url_brand:
+        candidates.append(url_brand.strip().lower())
+    for key in candidates:
+        promo = ACTIVE_STORE_PROMOS.get(key)
+        if promo and (now - promo["ts"]) < PROMO_TTL_SECONDS:
+            return promo
+    return None
+
+
+def apply_promo_to_price(price_str: str | None, promo: dict | None) -> str | None:
+    if not price_str or not promo:
+        return None
+    amount, base = parse_price_amount(price_str)
+    if amount is None or not base:
+        return None
+    symbol_map = {"USD": "$", "GBP": "£", "EUR": "€"}
+    symbol = symbol_map.get(base, "$")
+    discounted = None
+    if promo.get("pct") and 1 <= promo["pct"] <= 95:
+        discounted = amount * (1.0 - promo["pct"] / 100.0)
+    elif promo.get("fixed") and promo.get("fixed_cur") == base and amount > promo["fixed"]:
+        discounted = amount - promo["fixed"]
+    if discounted is None or discounted <= 0:
+        return None
+    base_discounted = f"{symbol}{discounted:.2f}"
+    return format_price_multi(base_discounted)
+
+
+def format_promo_lines(price_str: str | None, promo: dict | None) -> list[str]:
+    if not promo or not promo.get("code"):
+        return []
+    code = promo["code"]
+    disc_desc = ""
+    if promo.get("pct"):
+        disc_desc = f" (-{promo['pct']}%)"
+    elif promo.get("fixed") and promo.get("fixed_cur"):
+        sym = {"USD": "$", "GBP": "£", "EUR": "€"}.get(promo["fixed_cur"], "$")
+        disc_desc = f" (-{sym}{promo['fixed']:.0f})"
+    lines = [f"🎟 <b>Промокод сегодня:</b> <code>{esc(code)}</code>{disc_desc}"]
+    discounted_multi = apply_promo_to_price(price_str, promo)
+    if discounted_multi:
+        lines.append(f"🔥 <b>С промокодом сейчас:</b> <code>{esc(discounted_multi)}</code>")
+    return lines
 
 
 def extract_price(title: str, summary: str) -> str:
@@ -763,6 +893,7 @@ async def fetch_product_data(url: str) -> dict:
     parsed_brand: str | None = None
     in_stock: bool = True
     available_sizes: list[str] = []
+    page_promo: dict | None = None
 
     try:
         async with AsyncSession() as s:
@@ -780,6 +911,17 @@ async def fetch_product_data(url: str) -> dict:
                 page_image = extract_page_image(page_html, url)
                 if page_image:
                     image_url = page_image
+
+                page_promo = extract_page_promo(page_html)
+                if page_promo:
+                    detected_brand = find_matched_brand(parsed_title) or find_matched_brand(url)
+                    if detected_brand:
+                        register_store_promo(
+                            detected_brand,
+                            page_promo["code"],
+                            pct=page_promo.get("pct"),
+                            source="сайт магазина",
+                        )
 
                 meta_price = (
                     extract_meta_content(page_html, "product:price:amount")
@@ -844,6 +986,7 @@ async def fetch_product_data(url: str) -> dict:
         "brand": parsed_brand,
         "in_stock": in_stock,
         "available_sizes": available_sizes,
+        "page_promo": page_promo,
     }
 
 
@@ -902,7 +1045,7 @@ def extract_url_from_text(text: str | None) -> str | None:
     return match.group(0).rstrip(".,);") if match else None
 
 
-def format_tracked_item_card(item: dict) -> str:
+def format_tracked_item_card(item: dict, page_promo: dict | None = None) -> str:
     brand = item.get("brand") or "Одежда"
     title = item.get("title") or "Товар"
     last_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
@@ -916,6 +1059,9 @@ def format_tracked_item_card(item: dict) -> str:
         f"📦 <b>Модель:</b> {esc(title)}",
         f"💳 <b>Цена:</b> <code>{esc(format_price_multi(last_price))}</code>",
     ]
+    active_promo = get_active_promo_for_item(item, page_promo=page_promo)
+    lines.extend(format_promo_lines(last_price, active_promo))
+
     if min_price and min_price != DEFAULT_PRICE_PLACEHOLDER:
         lines.append(f"📉 <b>Минимум:</b> <code>{esc(min_price)}</code>")
 
@@ -1019,7 +1165,7 @@ async def add_url_to_tracker(message: types.Message, user_id: int, url: str) -> 
     except Exception:
         pass
 
-    caption = "✅ <b>Сохранено!</b>\n\n" + format_tracked_item_card(saved_item)
+    caption = "✅ <b>Сохранено!</b>\n\n" + format_tracked_item_card(saved_item, page_promo=data.get("page_promo"))
     await send_photo_or_text(message.chat.id, caption, image_url=image_url, reply_markup=build_tracked_item_kb(saved_item))
     await message.answer(
         "Товар добавлен! Можешь нажать <b>👟 Размеры</b> под карточкой, чтобы задать приоритетные размеры для себя 👇",
@@ -1370,6 +1516,8 @@ async def evaluate_and_notify_item(item: dict, notify_if_unchanged: bool = False
             lines = [
                 f"✅ <b>{esc(item.get('title'))}</b> — цена без изменений: <code>{esc(format_price_multi(effective_price))}</code>"
             ]
+            active_promo = get_active_promo_for_item(item, page_promo=data.get("page_promo"))
+            lines.extend(format_promo_lines(effective_price, active_promo))
             if new_in_stock is False:
                 lines.append("🔴 Сейчас нет в наличии.")
             elif new_sizes:
@@ -1683,6 +1831,57 @@ async def notify_matching_user_alerts(title: str, brand: str, post_text: str, im
                 logger.debug("Alert DM error for %s: %s", uid, e)
 
 
+async def notify_tracked_users_about_promo(brand: str, promo: dict) -> None:
+    """When a new promo code for a brand appears today, alert users tracking items of that brand with exact discounted prices."""
+    try:
+        res = await db_exec(lambda: supabase.table("tracked_items").select("*").execute())
+    except Exception:
+        return
+    if not res.data:
+        return
+
+    brand_lower = brand.strip().lower()
+    by_user: dict[int, list[dict]] = {}
+    for item in res.data:
+        item_brand = (item.get("brand") or "").strip().lower()
+        url_brand = (find_matched_brand(item.get("url")) or "").strip().lower()
+        if item_brand == brand_lower or url_brand == brand_lower:
+            by_user.setdefault(item["user_id"], []).append(item)
+
+    code = promo["code"]
+    disc_desc = ""
+    if promo.get("pct"):
+        disc_desc = f" (-{promo['pct']}%)"
+    elif promo.get("fixed") and promo.get("fixed_cur"):
+        sym = {"USD": "$", "GBP": "£", "EUR": "€"}.get(promo["fixed_cur"], "$")
+        disc_desc = f" (-{sym}{promo['fixed']:.0f})"
+
+    for uid, items in by_user.items():
+        dedup_key = (uid, brand_lower, code)
+        if dedup_key in NOTIFIED_PROMOS:
+            continue
+        NOTIFIED_PROMOS.add(dedup_key)
+
+        lines = [
+            f"🎟 <b>ПРОМОКОД СЕГОДНЯ НА {esc(brand.upper())}!</b>",
+            f"Код: <code>{esc(code)}</code>{disc_desc}\n",
+            "<b>Твои товары из списка с этим промокодом:</b>",
+        ]
+        for item in items[:10]:
+            title = esc(item.get("title") or "Товар")
+            url = item.get("url") or ""
+            base_price = item.get("last_price") or DEFAULT_PRICE_PLACEHOLDER
+            disc_price = apply_promo_to_price(base_price, promo)
+            if disc_price:
+                lines.append(f"• <a href=\"{html.escape(url)}\">{title}</a>: <code>{esc(base_price)}</code> ➡️ <b>{esc(disc_price)}</b>")
+            else:
+                lines.append(f"• <a href=\"{html.escape(url)}\">{title}</a>: <code>{esc(base_price)}</code>")
+        try:
+            await bot.send_message(uid, "\n".join(lines), disable_web_page_preview=True)
+        except Exception as e:
+            logger.debug("Promo DM error for %s: %s", uid, e)
+
+
 async def process_entry(entry, flag: str):
     title = clean_text(getattr(entry, "title", ""))
     main_link = getattr(entry, "link", "")
@@ -1694,19 +1893,38 @@ async def process_entry(entry, flag: str):
     if not brand:
         return
 
+    discount_pct = extract_discount_pct(title, summary)
+    fixed_disc, fixed_cur = extract_discount_fixed(title, summary)
+    promo_code = extract_promo_code(title, summary)
+
+    # Always harvest today's promo codes from RSS feeds even if the deal was already posted before restart
+    is_new_promo = False
+    if promo_code:
+        is_new_promo = register_store_promo(
+            brand,
+            promo_code,
+            pct=discount_pct,
+            fixed=fixed_disc,
+            fixed_cur=fixed_cur,
+            source="RSS",
+        )
+
     deal_id = getattr(entry, "id", main_link)
     if await is_deal_already_posted(deal_id, title):
         return
 
+    if is_new_promo and promo_code:
+        promo_obj = ACTIVE_STORE_PROMOS.get(brand.strip().lower())
+        if promo_obj:
+            await notify_tracked_users_about_promo(brand, promo_obj)
+
     price = extract_price(title, summary)
-    discount_pct = extract_discount_pct(title, summary)
     has_numeric_price = parse_price_amount(price)[0] is not None
 
     # Filter out weak percentage-only deals (e.g. "10% off" with no concrete price)
     if not has_numeric_price and discount_pct is not None and discount_pct < MIN_DISCOUNT_PCT:
         return
 
-    promo_code = extract_promo_code(title, summary)
     target_link = extract_best_link(summary, main_link)
     image_url = extract_hd_image(entry, summary)
 
