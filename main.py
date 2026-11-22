@@ -372,12 +372,20 @@ def extract_promo_code(title: str, summary: str) -> str | None:
 
 
 def extract_discount_pct(title: str, summary: str) -> int | None:
-    text = f"{title} {summary}"
-    pcts = [
-        int(m)
-        for m in re.findall(r"(?:extra\s*|up\s*to\s*|-)?(\d{1,2})\s*%\s*(?:off|скидк|rabatt|descuento|de\s*réduction)?", text, re.IGNORECASE)
-        if 5 <= int(m) <= 95
+    clean_summary = clean_text(re.sub(r"<[^>]+>", " ", summary or ""))
+    clean_summary = re.sub(r"https?://\S+", " ", clean_summary)
+    text = f"{title} {clean_summary}"
+    patterns = [
+        r"\b(\d{1,2})\s*%\s*(?:off|rabatt|descuento|sconto|r[eé]duction|zni[zż]k|скидк|від|от)\b",
+        r"\b(?:extra|save|sparen|rabatt|скидка)\s+(\d{1,2})\s*%",
+        r"(?<![A-Za-z0-9])-(\d{1,2})\s*%",
     ]
+    pcts = []
+    for pat in patterns:
+        for m in re.findall(pat, text, re.IGNORECASE):
+            val = int(m)
+            if 5 <= val <= 85:
+                pcts.append(val)
     return max(pcts) if pcts else None
 
 
