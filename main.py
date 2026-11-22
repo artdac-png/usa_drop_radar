@@ -171,8 +171,23 @@ STANDARD_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nike&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=adidas&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=new+balance&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=joes+new+balance&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=north+face&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=levis&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=asics&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=hoka&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=salomon&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=calvin+klein&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=tommy+hilfiger&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=gap&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=6pm&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=sierra&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=nordstrom+rack&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=ebay+adidas&rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://slickdeals.net/newsearch.php?mode=popdeals&q=ebay+puma&rss=1"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c196/Clothing-Accessories/?rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.dealnews.com/c202/Clothing-Accessories/Shoes/?rss=1"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://sneakersteal.com/feed/"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/fashion"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/sports-fitness"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.hotukdeals.com/rss/tag/trainers"},
@@ -190,6 +205,7 @@ REDDIT_RSS_SOURCES = [
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalmalefashion/.rss"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/frugalfemalefashion/.rss"},
     {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/SneakerDeals/.rss"},
+    {"flag": "🇺🇸 [США / US]", "url": "https://www.reddit.com/r/RunningShoeGeeks/.rss"},
     {"flag": "🇬🇧 [Великобритания / GB]", "url": "https://www.reddit.com/r/FrugalMaleFashionUK/.rss"},
 ]
 
@@ -2300,7 +2316,13 @@ async def fetch_feed(source: dict):
 
 
 async def scan_and_post(sources: list[dict]):
-    results = await asyncio.gather(*[fetch_feed(source) for source in sources])
+    sem = asyncio.Semaphore(6)
+
+    async def _bounded_fetch(source: dict):
+        async with sem:
+            return await fetch_feed(source)
+
+    results = await asyncio.gather(*[_bounded_fetch(source) for source in sources])
     for entries, flag in results:
         for entry in entries:
             await process_entry(entry, flag)
