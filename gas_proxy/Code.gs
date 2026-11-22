@@ -76,61 +76,78 @@ function scrapeProduct(url) {
     headers: headers
   });
 
-  if (resp.getResponseCode() !== 200) {
-    return res;
-  }
+  if (resp.getResponseCode() === 200) {
+    var html = resp.getContentText();
 
-  var html = resp.getContentText();
-
-  // Title
-  res.title = extractMeta(html, "og:title");
-  if (!res.title) {
-    var tMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    if (tMatch) res.title = decodeHtml(tMatch[1]).trim();
-  }
-
-  // Image
-  res.image = extractMeta(html, "og:image:secure_url")
-    || extractMeta(html, "og:image")
-    || extractMeta(html, "twitter:image");
-  if (!res.image) {
-    var jsonImg = html.match(/"image"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+)"/i)
-      || html.match(/"image"\s*:\s*\[\s*"(https?:\\?\/\\?\/[^"\\]+)"/i);
-    if (jsonImg) {
-      res.image = jsonImg[1].replace(/\\\//g, "/");
+    // Title
+    res.title = extractMeta(html, "og:title");
+    if (!res.title) {
+      var tMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (tMatch) res.title = decodeHtml(tMatch[1]).trim();
     }
+
+    // Image
+    res.image = extractMeta(html, "og:image:secure_url")
+      || extractMeta(html, "og:image")
+      || extractMeta(html, "twitter:image");
+    if (!res.image) {
+      var jsonImg = html.match(/"image"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+)"/i)
+        || html.match(/"image"\s*:\s*\[\s*"(https?:\\?\/\\?\/[^"\\]+)"/i);
+      if (jsonImg) {
+        res.image = jsonImg[1].replace(/\\\//g, "/");
+      }
+    }
+
+    // Price
+    var metaPrice = extractMeta(html, "product:price:amount") || extractMeta(html, "og:price:amount");
+    var priceNum = null;
+    if (metaPrice && /^\d+(?:[.,]\d{1,2})?$/.test(metaPrice)) {
+      priceNum = metaPrice.replace(",", ".");
+    } else {
+      var pMatch = html.match(/"price"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?/i)
+        || html.match(/"priceAmount"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?/i)
+        || html.match(/"lowPrice"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?/i)
+        || html.match(/itemprop=["']price["'][^>]+content=["'](\d+(?:\.\d{1,2})?)["']/i);
+      if (pMatch) priceNum = pMatch[1];
+    }
+    if (priceNum && priceNum !== "0" && priceNum !== "0.00") {
+      var sym = detectCurrency(html, url);
+      res.price = sym + priceNum;
+    }
+
+    // Sizes (if not already fetched via API)
+    if (!res.sizes.length) {
+      res.sizes = extractSizesFromHtml(html, urlLower);
+    }
+
+    // Out of stock check
+    if (res.sizes.length > 0) {
+      res.in_stock = true;
+    } else if (/"availability"\s*:\s*"(?:https?:\/\/schema\.org\/)?OutOfStock"/i.test(html)
+        && !/"availability"\s*:\s*"(?:https?:\/\/schema\.org\/)?InStock"/i.test(html)) {
+      res.in_stock = false;
+    }
+
+    // Promo code on page
+    res.promo = extractPagePromo(html);
   }
 
-  // Price
-  var metaPrice = extractMeta(html, "product:price:amount") || extractMeta(html, "og:price:amount");
-  var priceNum = null;
-  if (metaPrice && /^\d+(?:[.,]\d{1,2})?$/.test(metaPrice)) {
-    priceNum = metaPrice.replace(",", ".");
-  } else {
-    var pMatch = html.match(/"price"\s*:\s*"?(\d+(?:\.\d{1,2})?)"?/i)
-      || html.match(/itemprop=["']price["'][^>]+content=["'](\d+(?:\.\d{1,2})?)["']/i);
-    if (pMatch) priceNum = pMatch[1];
+  // Fallback price via Google Search Cache (runs even when direct fetch returns 403)
+  if (!res.price || res.price === "NOT_FOUND") {
+    try {
+      var gResp = UrlFetchApp.fetch("https://www.google.com/search?q=" + encodeURIComponent(url), {
+        muteHttpExceptions: true,
+        headers: { "User-Agent": headers["User-Agent"] }
+      });
+      var gPrices = gResp.getContentText().match(/\$\d+(?:\.\d{2})?/g) || [];
+      for (var gp = 0; gp < gPrices.length; gp++) {
+        if (gPrices[gp] !== "$0.00" && gPrices[gp] !== "$0") {
+          res.price = gPrices[gp];
+          break;
+        }
+      }
+    } catch (e) {}
   }
-  if (priceNum) {
-    var sym = detectCurrency(html, url);
-    res.price = sym + priceNum;
-  }
-
-  // Sizes (if not already fetched via API)
-  if (!res.sizes.length) {
-    res.sizes = extractSizesFromHtml(html, urlLower);
-  }
-
-  // Out of stock check
-  if (res.sizes.length > 0) {
-    res.in_stock = true;
-  } else if (/"availability"\s*:\s*"(?:https?:\/\/schema\.org\/)?OutOfStock"/i.test(html)
-      && !/"availability"\s*:\s*"(?:https?:\/\/schema\.org\/)?InStock"/i.test(html)) {
-    res.in_stock = false;
-  }
-
-  // Promo code on page
-  res.promo = extractPagePromo(html);
 
   return res;
 }
