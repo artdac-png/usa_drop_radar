@@ -93,6 +93,8 @@ EMAIL_SERVICE_STOP_WORDS = (
     "has been delivered", "tracking number", "return label", "refund processed",
     "reset your password", "password reset", "verification code", "verify your email",
     "security alert", "sign-in attempt", "invoice #", "receipt for your",
+    "your cart is waiting", "left something in your cart", "left in your cart",
+    "still in your bag", "complete your purchase",
 )
 
 
@@ -2408,10 +2410,12 @@ def extract_email_body(msg: Message) -> tuple[str, str]:
 
     raw_html = "\n".join(html_parts)
     plain = "\n".join(plain_parts)
-    if not plain and raw_html:
+    html_text = ""
+    if raw_html:
         stripped = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw_html, flags=re.S | re.I)
-        plain = clean_text(re.sub(r"<[^>]+>", " ", stripped))
-    return plain, raw_html
+        html_text = clean_text(re.sub(r"<[^>]+>", " ", stripped))
+    combined_text = f"{plain}\n{html_text}".strip()
+    return combined_text, raw_html
 
 
 def extract_email_store_link(raw_html: str) -> str | None:
@@ -2463,9 +2467,11 @@ def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
                     or find_matched_brand(plain[:1500])
                     or "Магазин"
                 )
-                promo_code = extract_promo_code(clean_subj, plain[:4000])
-                discount_pct = extract_discount_pct(clean_subj, plain[:4000])
-                fixed_disc, fixed_cur = extract_discount_fixed(clean_subj, plain[:4000])
+                promo_code = extract_promo_code(clean_subj, plain[:8000])
+                if not promo_code:
+                    continue
+                discount_pct = extract_discount_pct(clean_subj, plain[:8000])
+                fixed_disc, fixed_cur = extract_discount_fixed(clean_subj, plain[:8000])
                 link = extract_email_store_link(raw_html)
 
                 results.append({
