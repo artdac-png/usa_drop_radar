@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from collections import deque
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import aiohttp
 import feedparser
@@ -407,6 +407,58 @@ def extract_levis_image(url: str) -> str | None:
     return None
 
 
+def extract_tnf_image(url: str) -> str | None:
+    """Build direct Cloudinary hero image URL for The North Face product pages."""
+    sku_match = re.search(r"(NF0A[A-Za-z0-9]+)", url, re.IGNORECASE)
+    if not sku_match:
+        return None
+    sku = sku_match.group(1).upper()
+    qs = parse_qs(urlparse(url).query)
+    color = (qs.get("color") or qs.get("colour") or [""])[0].strip().upper()
+    if color:
+        return f"https://assets.thenorthface.com/image/upload/f_jpg,w_800/{sku}{color}-HERO"
+    return f"https://assets.thenorthface.com/image/upload/f_jpg,w_800/{sku}-HERO"
+
+
+def normalize_image_url(img_url: str | None, page_url: str) -> str | None:
+    if not img_url:
+        return None
+    img_url = html.unescape(img_url).strip()
+    if not img_url or img_url.startswith("data:"):
+        return None
+    if img_url.startswith("//"):
+        return "https:" + img_url
+    if img_url.startswith("/"):
+        return urljoin(page_url, img_url)
+    return img_url
+
+
+def extract_page_image(page_html: str, page_url: str) -> str | None:
+    """Extract product image from og:image, twitter:image, JSON-LD schema.org image, or link rel=image_src."""
+    for prop in ("og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"):
+        val = extract_meta_content(page_html, prop)
+        norm = normalize_image_url(val, page_url)
+        if norm:
+            return norm
+
+    # JSON-LD / Schema.org "image": "https://..." or "image": ["https://...", ...]
+    json_img = (
+        re.search(r'"image"\s*:\s*"(https?:\\?/\\?/[^"\\]+(?:\.(?:jpg|jpeg|png|webp)[^"\\]*|[^"\\]*))"', page_html, re.IGNORECASE)
+        or re.search(r'"image"\s*:\s*\[\s*"(https?:\\?/\\?/[^"\\]+)"', page_html, re.IGNORECASE)
+    )
+    if json_img:
+        candidate = json_img.group(1).replace("\\/", "/")
+        norm = normalize_image_url(candidate, page_url)
+        if norm and not any(bad in norm.lower() for bad in ("logo", "icon", "sprite", "placeholder", ".svg")):
+            return norm
+
+    link_img = re.search(r'<link[^>]+rel=["\']image_src["\'][^>]+href=["\']([^"\']+)["\']', page_html, re.IGNORECASE)
+    if link_img:
+        return normalize_image_url(link_img.group(1), page_url)
+
+    return None
+
+
 def extract_meta_content(page_html: str, prop_name: str) -> str | None:
     """Extract meta tag content regardless of attribute order or quote style, preserving original case."""
     escaped = re.escape(prop_name)
@@ -453,7 +505,12 @@ def detect_currency_symbol(page_html: str, url: str) -> str:
 
 async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str | None]:
     price = DEFAULT_PRICE_PLACEHOLDER
-    image_url = extract_levis_image(url) if "levi.com" in url.lower() else None
+    url_lower = url.lower()
+    image_url: str | None = None
+    if "levi.com" in url_lower:
+        image_url = extract_levis_image(url)
+    elif "thenorthface.com" in url_lower:
+        image_url = extract_tnf_image(url)
     parsed_title: str | None = None
     parsed_brand: str | None = None
 
@@ -470,9 +527,9 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
                     if title_match:
                         parsed_title = html.unescape(title_match.group(1)).strip()
 
-                og_image = extract_meta_content(page_html, "og:image")
-                if og_image:
-                    image_url = og_image
+                page_image = extract_page_image(page_html, url)
+                if page_image:
+                    image_url = page_image
 
                 meta_price = (
                     extract_meta_content(page_html, "product:price:amount")
@@ -495,7 +552,7 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
     except Exception as e:
         logger.warning("⚠️ Ошибка curl_cffi для %s: %s", url, e)
 
-    if price == DEFAULT_PRICE_PLACEHOLDER and GAS_PROXY_URL and http_session:
+    if (price == DEFAULT_PRICE_PLACEHOLDER or not image_url) and GAS_PROXY_URL and http_session:
         try:
             async with http_session.get(
                 GAS_PROXY_URL,
@@ -505,19 +562,21 @@ async def fetch_product_data(url: str) -> tuple[str, str | None, str | None, str
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("status") == "success":
-                        if data.get("price") and data.get("price") != "NOT_FOUND":
+                        if price == DEFAULT_PRICE_PLACEHOLDER and data.get("price") and data.get("price") != "NOT_FOUND":
                             price = data.get("price")
-                        if data.get("image"):
-                            image_url = data.get("image")
-                        if data.get("title") and "error" not in data.get("title").lower():
+                        if not image_url and data.get("image"):
+                            image_url = normalize_image_url(data.get("image"), url)
+                        if not parsed_title and data.get("title") and "error" not in data.get("title").lower():
                             parsed_title = data.get("title")
-                        if data.get("brand"):
+                        if not parsed_brand and data.get("brand"):
                             parsed_brand = data.get("brand")
         except Exception as e:
             logger.debug("GAS proxy fallback error for %s: %s", url, e)
 
     if parsed_title and any(w in parsed_title.lower() for w in ["oops", "error", "access denied", "not found", "forbidden", "just a moment", "attention required"]):
-        parsed_title, image_url = None, None
+        parsed_title = None
+        if not ("levi.com" in url_lower or "thenorthface.com" in url_lower):
+            image_url = None
 
     return price, image_url, parsed_title, parsed_brand
 
@@ -808,7 +867,16 @@ async def manual_check_item(callback: types.CallbackQuery):
         return
 
     item = res.data[0]
-    new_price, _, _, _ = await fetch_product_data(item["url"])
+    new_price, new_image, _, _ = await fetch_product_data(item["url"])
+
+    # Backfill missing photo in DB if we found one now
+    image_to_use = item.get("image_url")
+    if not image_to_use and new_image:
+        image_to_use = new_image
+        await db_exec(
+            lambda: supabase.table("tracked_items").update({"image_url": new_image}).eq("id", item["id"]).execute()
+        )
+
     if new_price == DEFAULT_PRICE_PLACEHOLDER:
         await callback.message.answer(f"⚠️ Не удалось получить актуальную цену для <b>{esc(item.get('title'))}</b>.")
         return
@@ -833,7 +901,7 @@ async def manual_check_item(callback: types.CallbackQuery):
     )
     msg = build_price_change_message(item, new_price)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 КУПИТЬ", url=item["url"])]])
-    await send_photo_or_text(callback.from_user.id, msg, image_url=item.get("image_url"), reply_markup=kb)
+    await send_photo_or_text(callback.from_user.id, msg, image_url=image_to_use, reply_markup=kb)
 
 
 def build_price_change_message(item: dict, new_price: str) -> str:
@@ -869,7 +937,19 @@ async def check_personal_tracker():
             if res.data:
                 logger.info("🔍 Проверка персонального трекера: %d товаров", len(res.data))
                 for item in res.data:
-                    new_price, _, _, _ = await fetch_product_data(item["url"])
+                    new_price, new_image, _, _ = await fetch_product_data(item["url"])
+                    image_to_use = item.get("image_url")
+                    if not image_to_use and new_image:
+                        image_to_use = new_image
+                        try:
+                            await db_exec(
+                                lambda i=item, img=new_image: supabase.table("tracked_items")
+                                .update({"image_url": img})
+                                .eq("id", i["id"])
+                                .execute()
+                            )
+                        except Exception:
+                            pass
                     if new_price == DEFAULT_PRICE_PLACEHOLDER:
                         await asyncio.sleep(1)
                         continue
@@ -890,7 +970,7 @@ async def check_personal_tracker():
                         msg = build_price_change_message(item, new_price)
                         try:
                             await send_photo_or_text(
-                                item["user_id"], msg, image_url=item.get("image_url"), reply_markup=kb
+                                item["user_id"], msg, image_url=image_to_use, reply_markup=kb
                             )
                             await db_exec(
                                 lambda i=item, p=new_price: supabase.table("tracked_items")
@@ -953,7 +1033,7 @@ async def process_entry(entry, flag: str):
                 page_html = resp.text
                 if is_out_of_stock(page_html):
                     return
-                og_img = extract_meta_content(page_html, "og:image")
+                og_img = extract_page_image(page_html, target_link)
                 if og_img and not any(bw in og_img.lower() for bw in ["sale", "banner", "promo", "off"]):
                     image_url = og_img
     except Exception:
