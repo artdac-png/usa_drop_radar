@@ -157,6 +157,7 @@ BRAND_ALIASES: list[tuple[str, str]] = [
     ("the north face", "The North Face"),
     ("north face", "The North Face"),
     ("tnf", "The North Face"),
+    ("ugg", "UGG"),
     ("joes new balance", "New Balance"),
     ("joe's new balance", "New Balance"),
     ("gap", "Gap"),
@@ -590,6 +591,15 @@ async def delete_promo_from_db(brand_key: str) -> None:
         pass
 
 
+def _promo_source_priority(source: str | None) -> int:
+    s = (source or "").lower()
+    if s in ("вручную", "почта"):
+        return 3
+    if s in ("nike.com", "сайт магазина", "gas"):
+        return 2
+    return 1
+
+
 def register_store_promo(
     brand: str,
     code: str,
@@ -598,21 +608,25 @@ def register_store_promo(
     fixed_cur: str | None = None,
     source: str = "RSS",
 ) -> bool:
-    """Store today's promo for a brand. Returns True if it's a newly discovered promo code."""
+    """Store today's promo for a brand. Official/manual/email promos are never overwritten by third-party RSS codes."""
     if not brand or not code:
         return False
     key = brand.strip().lower()
     now = time.time()
+    new_prio = _promo_source_priority(source)
     existing = ACTIVE_STORE_PROMOS.get(key)
     if existing and (now - existing["ts"]) < PROMO_TTL_SECONDS:
+        old_prio = _promo_source_priority(existing.get("source"))
+        if new_prio < old_prio:
+            return False
         if existing["code"] == code:
             if pct and (not existing.get("pct") or pct > existing["pct"]):
                 existing["pct"] = pct
                 _schedule_promo_persist(key, existing)
             existing["ts"] = now
             return False
-        # Keep the better percentage discount if another code is already active today
-        if existing.get("pct") and pct and pct < existing["pct"]:
+        # Same priority: keep the better percentage discount if another code is already active today
+        if new_prio == old_prio and existing.get("pct") and pct and pct < existing["pct"]:
             return False
 
     promo = {
@@ -1079,21 +1093,19 @@ def parse_user_sizes_input(text: str) -> list[str]:
 
 
 def size_matches_target(available_label: str, target: str) -> bool:
-    """Match target like '10', '7.5', 'W 7.5', 'M', 'XL' against labels like 'M 10 / W 11.5', 'M 6 / W 7.5', 'L'."""
+    """Match target like '10', 'M13', 'M 13', 'W 7.5', 'M', 'XL' against labels like 'M 13 / W 14.5', 'M 6 / W 7.5', 'L'."""
     avail_norm = re.sub(r"\s+", " ", available_label.strip().upper())
     targ_norm = re.sub(r"\s+", " ", target.strip().upper())
+    targ_norm = re.sub(r"^([MW])\s*(\d)", r"\1 \2", targ_norm)
     if not targ_norm:
         return False
     if avail_norm == targ_norm:
         return True
-    # Split slash-separated dual labels like "M 6 / W 7.5"
-    segments = [seg.strip() for seg in avail_norm.split("/")]
+    segments = [re.sub(r"^([MW])\s*(\d)", r"\1 \2", seg.strip()) for seg in avail_norm.split("/")]
     for seg in segments:
         if seg == targ_norm:
             return True
-        # Match standalone number/letter token inside segment (so "10" matches "M 10" but NOT "M 10.5")
         if re.search(rf"(?<![A-Z0-9.]){re.escape(targ_norm)}(?![A-Z0-9.])", seg):
-            # If user wrote just "M", don't match "M 10" (men's shoe prefix)
             if targ_norm in ("M", "W") and re.search(r"\d", seg):
                 continue
             return True
@@ -2288,9 +2300,12 @@ async def process_entry(entry, flag: str):
     fixed_disc, fixed_cur = extract_discount_fixed(title, summary)
     promo_code = extract_promo_code(title, summary)
 
-    # Always harvest today's promo codes from RSS feeds even if the deal was already posted before restart
+    # Only register RSS promo for a brand if it's not a 3rd-party department store coupon (e.g. Kohl's/Macy's/JCPenney)
+    third_party_retailers = ("kohl's", "kohls", "macy's", "macys", "jcpenney", "belk", "dillard", "nordstrom", "zappos", "6pm", "sierra", "rei ", "dick's", "dicks", "foot locker", "finish line", "jd sports", "champs", "hibbett", "dtlr")
+    is_third_party_promo = any(rt in title.lower() for rt in third_party_retailers)
+
     is_new_promo = False
-    if promo_code:
+    if promo_code and not is_third_party_promo:
         is_new_promo = register_store_promo(
             brand,
             promo_code,
@@ -2535,6 +2550,26 @@ def extract_email_body(msg: Message) -> tuple[str, str]:
     return combined_text, raw_html
 
 
+def extract_sender_store_name(sender: str | None) -> str:
+    """Extract clean store name from email From header like 'UGG <ugg@emails.ugg.com>' -> 'UGG'."""
+    if not sender:
+        return "Магазин"
+    s = clean_text(sender)
+    # 1. Display name before <email>
+    m_name = re.match(r'^"?([^"<@]+?)"?\s*<[^>]+>$', s)
+    if m_name:
+        name = m_name.group(1).strip(" -|:,")
+        if name and len(name) >= 2 and name.lower() not in ("info", "no-reply", "noreply", "support", "hello", "news", "newsletter"):
+            return name[:35]
+    # 2. Domain name from email address (e.g. ugg@emails.ugg.com -> Ugg)
+    m_dom = re.search(r"@([A-Za-z0-9.-]+)", s)
+    if m_dom:
+        parts = [p for p in m_dom.group(1).lower().split(".") if p not in ("com", "net", "org", "co", "uk", "us", "mail", "email", "emails", "em", "send", "updates", "marketing", "official", "bc", "e", "news")]
+        if parts:
+            return parts[-1].upper() if len(parts[-1]) <= 4 else parts[-1].title()
+    return "Магазин"
+
+
 def extract_email_store_link(raw_html: str) -> str | None:
     if not raw_html:
         return None
@@ -2605,7 +2640,7 @@ def fetch_unread_emails_sync(limit: int = 10) -> list[dict]:
                     find_matched_brand(clean_subj)
                     or find_matched_brand(sender)
                     or find_matched_brand(plain[:1500])
-                    or "Магазин"
+                    or extract_sender_store_name(sender)
                 )
                 promo_code = extract_promo_code(clean_subj, plain[:8000])
                 if not promo_code:
