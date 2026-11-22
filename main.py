@@ -46,7 +46,8 @@ GAS_PROXY_URL = os.getenv("GAS_PROXY_URL")
 RADAR_STANDARD_INTERVAL = int(os.getenv("RADAR_STANDARD_INTERVAL", "600"))
 RADAR_REDDIT_INTERVAL = int(os.getenv("RADAR_REDDIT_INTERVAL", "900"))
 TRACKER_INTERVAL = int(os.getenv("TRACKER_INTERVAL", "10800"))
-MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "20"))
+MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "35"))
+MAX_PRICE_NO_DISCOUNT_USD = float(os.getenv("MAX_PRICE_NO_DISCOUNT_USD", "95"))
 DEAL_DEDUP_DAYS = int(os.getenv("DEAL_DEDUP_DAYS", "7"))
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
@@ -146,6 +147,7 @@ EXCLUDE_STOP_WORDS = [
     "boy", "boys", "boy's", "girl", "girls", "girl's",
     "gs", "ps", "td", "preschool", "grade school",
     "expired", "dead deal", "sold out", "deal ended", "ended", "no longer available",
+    "lokal", "in-store only", "in store only", "ymmv",
     "keyboard", "wagon", "gaming", "computer", "mouse", "toy", "toys", "tools", "kitchen", "vacuum", "printer",
     "controller", "nintendo", "switch", "playstation", "ps5", "ps4", "xbox", "mario", "luigi", "lego", "console",
     "coffee", "coffeeware", "nespresso", "starbucks", "espresso", "tea", "snack", "snacks", "grocery", "food", "candy", "chocolate",
@@ -400,6 +402,41 @@ def extract_discount_fixed(title: str, summary: str) -> tuple[float | None, str 
         cur_map = {"$": "USD", "£": "GBP", "€": "EUR"}
         return float(m.group(2)), cur_map.get(m.group(1))
     return None, None
+
+
+def extract_discount_from_compare_price(title: str, summary: str, current_price_str: str) -> int | None:
+    """Calculate discount % from reference prices like 'PVG 140€', 'UVP 150€', 'Reg. $120', 'Was $110'."""
+    cur_amt, cur_code = parse_price_amount(current_price_str)
+    if cur_amt is None or not cur_code or cur_amt <= 0:
+        return None
+    clean_sum = clean_text(re.sub(r"<[^>]+>", " ", summary or ""))
+    text = f"{title} {clean_sum}"
+    matches = re.findall(
+        r"\b(?:pvg|uvp|reg\.?|list|was|orig\.?|msrp|rrp)\s*[:\-]?\s*([$£€]\s*\d+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?\s*[$£€])",
+        text,
+        re.IGNORECASE,
+    )
+    best_pct = None
+    for ref_str in matches:
+        ref_amt, ref_code = parse_price_amount(ref_str)
+        if ref_amt and ref_code == cur_code and ref_amt > cur_amt:
+            pct = int(round((ref_amt - cur_amt) / ref_amt * 100))
+            if 5 <= pct <= 90 and (best_pct is None or pct > best_pct):
+                best_pct = pct
+    return best_pct
+
+
+def price_to_usd(price_str: str | None) -> float | None:
+    amt, code = parse_price_amount(price_str)
+    if amt is None or not code:
+        return None
+    if code == "USD":
+        return amt
+    rate = EXCHANGE_RATES.get(code)
+    if rate and rate > 0:
+        return amt / rate
+    fallback = {"EUR": 0.92, "GBP": 0.79}.get(code, 1.0)
+    return amt / fallback
 
 
 def extract_page_promo(page_html: str) -> dict | None:
@@ -2138,10 +2175,18 @@ async def process_entry(entry, flag: str):
             await notify_tracked_users_about_promo(brand, promo_obj)
 
     has_numeric_price = parse_price_amount(price)[0] is not None
+    compare_pct = extract_discount_from_compare_price(title, summary, price)
+    effective_discount = max([p for p in (discount_pct, compare_pct) if p is not None], default=None)
 
-    # Filter out weak percentage-only deals (e.g. "10% off" with no concrete price)
-    if not has_numeric_price and discount_pct is not None and discount_pct < MIN_DISCOUNT_PCT:
+    # Quality gate (35%+ discount, or concrete price <= $95 when discount % isn't mentioned)
+    if effective_discount is not None and effective_discount < MIN_DISCOUNT_PCT:
         return
+    if effective_discount is None:
+        if not has_numeric_price:
+            return
+        usd_val = price_to_usd(price)
+        if usd_val is not None and usd_val > MAX_PRICE_NO_DISCOUNT_USD:
+            return
 
     image_url = extract_hd_image(entry, summary)
 
@@ -2179,13 +2224,14 @@ async def process_entry(entry, flag: str):
         logger.error("⚠️ Ошибка сохранения posted_deals: %s", e)
 
     price_with_multi = format_price_multi(price)
-    top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{discount_pct}%)</b>\n" if (discount_pct and discount_pct >= 50) else ""
+    top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{effective_discount}%)</b>\n" if (effective_discount and effective_discount >= 50) else ""
+    disc_badge = f"🔥 <b>Скидка ~{effective_discount}%</b>\n" if (effective_discount and MIN_DISCOUNT_PCT <= effective_discount < 50) else ""
     drop_note = f"📉 <b>ЦЕНА СТАЛА ЕЩЁ НИЖЕ (было {esc(prev_price)})!</b>\n" if prev_price else ""
     promo_line = f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>" if promo_code else ""
 
     post_text = (
         f"{drop_note}"
-        f"{top_badge}"
+        f"{top_badge or disc_badge}"
         f"<b>DROP SIGNAL | {brand_to_hashtag(brand)}</b>\n"
         f"{esc(flag)}\n\n"
         f"<b>{esc(title)}</b>\n"
