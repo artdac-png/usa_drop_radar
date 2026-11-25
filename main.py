@@ -63,6 +63,7 @@ TRACKER_INTERVAL = int(os.getenv("TRACKER_INTERVAL", "10800"))
 EMAIL_CHECK_INTERVAL = int(os.getenv("EMAIL_CHECK_INTERVAL", "600"))
 MIN_DISCOUNT_PCT = int(os.getenv("MIN_DISCOUNT_PCT", "35"))
 MAX_PRICE_NO_DISCOUNT_USD = float(os.getenv("MAX_PRICE_NO_DISCOUNT_USD", "95"))
+SNIPER_FILTER_ENABLED = os.getenv("SNIPER_FILTER_ENABLED", "1") == "1"
 DEAL_DEDUP_DAYS = int(os.getenv("DEAL_DEDUP_DAYS", "7"))
 
 if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
@@ -486,6 +487,71 @@ def price_to_usd(price_str: str | None) -> float | None:
         return amt / rate
     fallback = {"EUR": 0.92, "GBP": 0.79}.get(code, 1.0)
     return amt / fallback
+
+
+CATEGORY_PRICE_RULES: list[tuple[str, re.Pattern[str], float, float, float]] = [
+    # (name, regex, max_usd, max_usd_if_50pct, sniper_usd)
+    (
+        "outerwear",
+        re.compile(r"\b(?:jacket|puffer|parka|coat|vest|windbreaker|anorak|bomber|shell|outerwear|jacke|daunenjacke|veste|kurtka|chaqueta|giacca)\b", re.I),
+        65.0, 95.0, 45.0,
+    ),
+    (
+        "footwear",
+        re.compile(r"\b(?:shoes?|sneakers?|trainers?|boots?|slides?|sandals?|runners?|schuhe?|laufschuh|turnschuh|zapatillas?|chaussures?|buty|air\s*max|air\s*force|dunk|p-?6000|vomero|pegasus|ultraboost|samba|gazelle|superstar|gel-\w+|574|550|990|2002r|1906\w*|clifton|bondi|xt-?6|chuck|badeschlappen)\b", re.I),
+        68.0, 105.0, 45.0,
+    ),
+    (
+        "accessories",
+        re.compile(r"\b(?:caps?|hats?|beanies?|socks?|belts?|gloves?|scarf|scarves|bags?|backpacks?|waistpacks?|crossbody|duffels?|duffles?|mütze|kappe|rucksack|tasche|gorra|casquette|czapka|plecak)\b", re.I),
+        15.0, 22.0, 10.0,
+    ),
+    (
+        "tops_shorts",
+        re.compile(r"\b(?:tees?|t-?shirts?|shirts?|polos?|shorts?|boxers?|briefs?|underwear|tank\s*top|leggings?)\b", re.I),
+        18.0, 25.0, 12.0,
+    ),
+    (
+        "hoodie_pants",
+        re.compile(r"\b(?:hoodies?|hoody|fleece|sweatshirts?|pullovers?|crewnecks?|joggers?|pants?|jeans?|denim|sweatpants?|tracksuits?|sweaters?|cardigans?|chinos|hose|jogginghose|kapuzenpullover|sudadera|pantalon|bluza|spodnie)\b", re.I),
+        35.0, 48.0, 22.0,
+    ),
+]
+
+
+def evaluate_sniper_deal(title: str, price_str: str, effective_discount: int | None, flag: str) -> tuple[bool, bool]:
+    """Return (should_post, is_sniper_hit) using category price caps and US-only general sale rule."""
+    usd_val = price_to_usd(price_str)
+    has_numeric_price = usd_val is not None
+
+    # Explicit discount below threshold is always skipped
+    if effective_discount is not None and effective_discount < MIN_DISCOUNT_PCT:
+        return False, False
+
+    # General percentage-only sale posts (no concrete price): keep ONLY for US sources with >= 35% off
+    if not has_numeric_price:
+        is_us = ("США" in flag) or ("US" in flag)
+        if is_us and effective_discount is not None and effective_discount >= MIN_DISCOUNT_PCT:
+            return True, False
+        return False, False
+
+    if not SNIPER_FILTER_ENABLED:
+        if effective_discount is None and usd_val > MAX_PRICE_NO_DISCOUNT_USD:
+            return False, False
+        return True, False
+
+    max_usd, max_usd_50, sniper_usd = 65.0, 95.0, 25.0
+    for _, pat, cap, cap50, snip in CATEGORY_PRICE_RULES:
+        if pat.search(title):
+            max_usd, max_usd_50, sniper_usd = cap, cap50, snip
+            break
+
+    allowed_cap = max_usd_50 if (effective_discount is not None and effective_discount >= 50) else max_usd
+    if usd_val > allowed_cap:
+        return False, False
+
+    is_sniper = (usd_val <= sniper_usd) or (effective_discount is not None and effective_discount >= 60 and usd_val <= max_usd)
+    return True, is_sniper
 
 
 def extract_page_promo(page_html: str) -> dict | None:
@@ -2362,19 +2428,12 @@ async def process_entry(entry, flag: str):
         if promo_obj:
             await notify_tracked_users_about_promo(brand, promo_obj)
 
-    has_numeric_price = parse_price_amount(price)[0] is not None
     compare_pct = extract_discount_from_compare_price(title, summary, price)
     effective_discount = max([p for p in (discount_pct, compare_pct) if p is not None], default=None)
 
-    # Quality gate (35%+ discount, or concrete price <= $95 when discount % isn't mentioned)
-    if effective_discount is not None and effective_discount < MIN_DISCOUNT_PCT:
+    should_post, is_sniper = evaluate_sniper_deal(title, price, effective_discount, flag)
+    if not should_post:
         return
-    if effective_discount is None:
-        if not has_numeric_price:
-            return
-        usd_val = price_to_usd(price)
-        if usd_val is not None and usd_val > MAX_PRICE_NO_DISCOUNT_USD:
-            return
 
     image_url = extract_hd_image(entry, summary)
 
@@ -2426,12 +2485,14 @@ async def process_entry(entry, flag: str):
         logger.error("⚠️ Ошибка сохранения posted_deals: %s", e)
 
     price_with_multi = format_price_multi(price)
+    sniper_badge = "🚨 <b>СНАЙПЕР-ЦЕНА!</b>\n" if is_sniper else ""
     top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{effective_discount}%)</b>\n" if (effective_discount and effective_discount >= 50) else ""
     disc_badge = f"🔥 <b>Скидка ~{effective_discount}%</b>\n" if (effective_discount and MIN_DISCOUNT_PCT <= effective_discount < 50) else ""
     drop_note = f"📉 <b>ЦЕНА СТАЛА ЕЩЁ НИЖЕ (было {esc(prev_price)})!</b>\n" if prev_price else ""
     promo_line = f"\n🎟 <b>Промокод:</b> <code>{esc(promo_code)}</code>" if promo_code else ""
 
     post_text = (
+        f"{sniper_badge}"
         f"{drop_note}"
         f"{top_badge or disc_badge}"
         f"<b>DROP SIGNAL | {brand_to_hashtag(brand)}</b>\n"
