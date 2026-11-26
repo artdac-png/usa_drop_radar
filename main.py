@@ -2485,7 +2485,7 @@ async def process_entry(entry, flag: str):
         logger.error("⚠️ Ошибка сохранения posted_deals: %s", e)
 
     price_with_multi = format_price_multi(price)
-    sniper_badge = "🚨 <b>СНАЙПЕР-ЦЕНА!</b>\n" if is_sniper else ""
+    sniper_badge = "⚡ <b>СУПЕР-ЦЕНА!</b>\n" if is_sniper else ""
     top_badge = f"🔥🔥🔥 <b>ТОП ДРОП (-{effective_discount}%)</b>\n" if (effective_discount and effective_discount >= 50) else ""
     disc_badge = f"🔥 <b>Скидка ~{effective_discount}%</b>\n" if (effective_discount and MIN_DISCOUNT_PCT <= effective_discount < 50) else ""
     drop_note = f"📉 <b>ЦЕНА СТАЛА ЕЩЁ НИЖЕ (было {esc(prev_price)})!</b>\n" if prev_price else ""
